@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-25
+
 ### Added
 
 - Added `--ssh-key` for unattended remote-source authentication.
+- Added `--include-intermediate` to replicate snapshots between application
+  snapshots during incremental sends.
 - Added systemd service and hourly timer templates with activation-relative
   scheduling.
 
@@ -54,7 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Nix development tooling and GitHub Actions builds for static Linux
   amd64 and arm64 binaries.
 
-[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/moddengine/modd-zfs-backup/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/moddengine/modd-zfs-backup/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/moddengine/modd-zfs-backup/releases/tag/v0.1.0

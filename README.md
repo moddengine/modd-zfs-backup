@@ -174,6 +174,7 @@ DEST=rpool/backup-test/us-sites
 SSH_KEY=/etc/modd-zfs-backup/fwtest_ed25519
 RECURSIVE=true
 FULL=false
+INCLUDE_INTERMEDIATE=false
 HEALTHCHECK_URL=
 ```
 
@@ -205,6 +206,12 @@ Unix time in seconds divided by 256 and encoded as lowercase base36, giving a
 short, transcribable key that changes about every 4 minutes 16 seconds. A
 numeric suffix prevents collisions if more than one snapshot is needed in the
 same interval. Older decimal snapshot names remain valid replication bases.
+
+`--include-intermediate` uses `zfs send -I` for incremental transfers so that
+snapshots created between application snapshots, such as Sanoid's time-based
+snapshots, are also replicated. On the destination, configure Sanoid with
+`autosnap=no` and `autoprune=yes`: creating destination-only snapshots still
+causes non-recursive backups to stop and recursive receives may remove them.
 
 Logs go to stderr in a journald-friendly format. `--healthcheck-url` enables
 `/start`, success, and `/fail` lifecycle pings. Minimum-interval and concurrent

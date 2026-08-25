@@ -43,9 +43,9 @@ type Source struct {
 }
 
 type Config struct {
-	Name, Dest, HealthcheckURL, SSHKey string
-	Source                             Source
-	Recursive, Progress, Full          bool
+	Name, Dest, HealthcheckURL, SSHKey             string
+	Source                                         Source
+	Recursive, Progress, Full, IncludeIntermediate bool
 }
 
 type ZFSRunner interface {
@@ -111,6 +111,7 @@ func main() {
 	flag.StringVar(&cfg.SSHKey, "ssh-key", "", "SSH private key for a remote source")
 	flag.BoolVar(&cfg.Full, "full", false, "replace an owned destination when no common snapshot exists")
 	flag.BoolVar(&cfg.Recursive, "recursive", false, "mirror descendant datasets")
+	flag.BoolVar(&cfg.IncludeIntermediate, "include-intermediate", false, "include intermediate snapshots in incremental sends")
 	flag.BoolVar(&cfg.Progress, "progress", false, "show interactive transfer progress")
 	flag.Parse()
 
@@ -130,6 +131,7 @@ func main() {
 	l.info("config", "destination=%s", cfg.Dest)
 	l.info("config", "full=%t", cfg.Full)
 	l.info("config", "recursive=%t", cfg.Recursive)
+	l.info("config", "include-intermediate=%t", cfg.IncludeIntermediate)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -677,7 +679,11 @@ func sendArgs(cfg Config, base *snapshot, snapName string, estimate, raw bool) [
 		args = append(args, "-R")
 	}
 	if base != nil {
-		args = append(args, "-i", cfg.Source.Dataset+"@"+base.Name)
+		incremental := "-i"
+		if cfg.IncludeIntermediate {
+			incremental = "-I"
+		}
+		args = append(args, incremental, cfg.Source.Dataset+"@"+base.Name)
 	}
 	return append(args, cfg.Source.Dataset+"@"+snapName)
 }

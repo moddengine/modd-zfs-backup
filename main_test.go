@@ -62,12 +62,16 @@ func TestParseAndValidate(t *testing.T) {
 }
 
 func TestCommandArguments(t *testing.T) {
-	cfg := Config{Name: "server-a", Source: Source{Remote: true, SSHHost: "backup@host", Dataset: "tank/data"}, Dest: "backup/server-a", Recursive: true}
+	cfg := Config{Name: "server-a", Source: Source{Remote: true, SSHHost: "backup@host", Dataset: "tank/data"}, Dest: "backup/server-a", Recursive: true, IncludeIntermediate: true}
 	base := &snapshot{Name: "mzb-server-a-old"}
 	got := sendArgs(cfg, base, "mzb-server-a-new", true, true)
-	want := []string{"send", "-nP", "-w", "-R", "-i", "tank/data@mzb-server-a-old", "tank/data@mzb-server-a-new"}
+	want := []string{"send", "-nP", "-w", "-R", "-I", "tank/data@mzb-server-a-old", "tank/data@mzb-server-a-new"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("send args: got %#v, want %#v", got, want)
+	}
+	cfg.IncludeIntermediate = false
+	if got := sendArgs(cfg, base, "mzb-server-a-new", false, false); got[2] != "-i" {
+		t.Fatalf("default incremental flag: got %#v", got)
 	}
 	ssh := sourceCommand(context.Background(), cfg.Source, "/etc/modd-zfs-backup/key", "list", "tank/data")
 	sshArgs := strings.Join(ssh.Args, " ")
