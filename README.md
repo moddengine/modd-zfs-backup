@@ -84,6 +84,16 @@ restricted with `zfs allow -l`, so the same command supports `--recursive`.
 The `send` permission is required for both ordinary and raw encrypted streams.
 The account does not need receive permission or access to the backup pool.
 
+When running the receiver with `sudo` and using a key already loaded into your
+SSH agent, preserve the agent socket:
+
+```sh
+sudo --preserve-env=SSH_AUTH_SOCK modd-zfs-backup \
+  --name server-a \
+  --source mzb-send@server-a:tank/data \
+  --dest backup/server-a/data
+```
+
 For a local source, grant the same permissions to the local account running
 `modd-zfs-backup`, or run the command as root.
 
@@ -120,6 +130,12 @@ The destination must not exist for its initial full receive. Later runs verify
 destination ownership and a common snapshot GUID before sending an incremental
 stream. Backups are received read-only and unmounted, interrupted receives are
 resumable, and encrypted sources are sent raw.
+
+Application snapshots are named `mzb-<name>-<timestamp>`. The timestamp is the
+Unix time in seconds divided by 256 and encoded as lowercase base36, giving a
+short, transcribable key that changes about every 4 minutes 16 seconds. A
+numeric suffix prevents collisions if more than one snapshot is needed in the
+same interval. Older decimal snapshot names remain valid replication bases.
 
 Logs go to stderr in a journald-friendly format. `--healthcheck-url` enables
 `/start`, success, and `/fail` lifecycle pings. Minimum-interval and concurrent

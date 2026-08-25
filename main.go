@@ -362,7 +362,8 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 		l.info("destination", "old destination destroyed; full receive will recreate it")
 	}
 	if target == nil {
-		created := snapshot{Name: fmt.Sprintf("mzb-%s-%d", cfg.Name, time.Now().UnixNano()), When: time.Now()}
+		now := time.Now()
+		created := snapshot{Name: snapshotName(cfg.Name, now, append(sourceSnaps, destSnaps...)), When: now}
 		path := cfg.Source.Dataset + "@" + created.Name
 		l.info("snapshot-create", "creating source snapshot %s", path)
 		args := []string{"snapshot"}
@@ -431,6 +432,23 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 	}
 	l.info("complete", "backup %s completed snapshot=%s mode=%s bytes=%s duration=%s", cfg.Name, target.Name, mode, formatBytes(bytesSent), time.Since(started).Round(time.Second))
 	return nil
+}
+
+func snapshotName(name string, now time.Time, existing []snapshot) string {
+	base := "mzb-" + name + "-" + strconv.FormatInt(now.Unix()/256, 36)
+	for suffix := 0; ; suffix++ {
+		candidate := base
+		if suffix > 0 {
+			candidate += "-" + strconv.Itoa(suffix)
+		}
+		found := false
+		for _, snap := range existing {
+			found = found || snap.Name == candidate
+		}
+		if !found {
+			return candidate
+		}
+	}
 }
 
 func lockDirectory() string {

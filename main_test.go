@@ -82,7 +82,15 @@ func TestCommandArguments(t *testing.T) {
 }
 
 func TestSnapshotAndResumeParsing(t *testing.T) {
-	now := time.Now()
+	now := time.Unix(1787636071, 656565753)
+	if got := snapshotName("fwtest", now, nil); got != "mzb-fwtest-45o2x" {
+		t.Fatalf("snapshotName() = %q", got)
+	}
+	if got := snapshotName("fwtest", now, []snapshot{{Name: "mzb-fwtest-45o2x"}, {Name: "mzb-fwtest-45o2x-1"}}); got != "mzb-fwtest-45o2x-2" {
+		t.Fatalf("colliding snapshotName() = %q", got)
+	}
+
+	now = time.Now()
 	source := []snapshot{{Name: "old", GUID: 1, When: now.Add(-time.Hour)}, {Name: "new", GUID: 2, When: now}}
 	dest := []snapshot{{Name: "renamed", GUID: 1, When: now.Add(-time.Hour)}}
 	if got := commonSnapshot(source, dest); got == nil || got.GUID != 1 {
