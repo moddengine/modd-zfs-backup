@@ -43,9 +43,9 @@ type Source struct {
 }
 
 type Config struct {
-	Name, Dest, HealthcheckURL string
-	Source                     Source
-	Recursive, Progress, Full  bool
+	Name, Dest, HealthcheckURL, SSHKey string
+	Source                             Source
+	Recursive, Progress, Full          bool
 }
 
 type ZFSRunner interface {
@@ -63,14 +63,14 @@ func (localZFS) Output(ctx context.Context, args ...string) ([]byte, error) {
 	return commandOutput(ctx, "zfs", args...)
 }
 
-type remoteZFS struct{ host string }
+type remoteZFS struct{ host, identity string }
 
 func (r remoteZFS) Run(ctx context.Context, args ...string) error {
-	return runCommand(ctx, "ssh", remoteArgs(r.host, args...)...)
+	return runCommand(ctx, "ssh", remoteArgs(r.host, r.identity, args...)...)
 }
 
 func (r remoteZFS) Output(ctx context.Context, args ...string) ([]byte, error) {
-	return commandOutput(ctx, "ssh", remoteArgs(r.host, args...)...)
+	return commandOutput(ctx, "ssh", remoteArgs(r.host, r.identity, args...)...)
 }
 
 type snapshot struct {
@@ -108,6 +108,7 @@ func main() {
 	flag.StringVar(&rawSource, "source", "", "local dataset or user@host:dataset")
 	flag.StringVar(&cfg.Dest, "dest", "", "local destination dataset")
 	flag.StringVar(&cfg.HealthcheckURL, "healthcheck-url", "", "Healthchecks.io ping URL")
+	flag.StringVar(&cfg.SSHKey, "ssh-key", "", "SSH private key for a remote source")
 	flag.BoolVar(&cfg.Full, "full", false, "replace an owned destination when no common snapshot exists")
 	flag.BoolVar(&cfg.Recursive, "recursive", false, "mirror descendant datasets")
 	flag.BoolVar(&cfg.Progress, "progress", false, "show interactive transfer progress")
@@ -197,6 +198,9 @@ func validateConfig(c Config) error {
 	if !c.Source.Remote && c.Source.Dataset == c.Dest {
 		return errors.New("source and destination must differ")
 	}
+	if c.SSHKey != "" && !c.Source.Remote {
+		return errors.New("--ssh-key requires a remote --source")
+	}
 	if !c.Source.Remote && c.Recursive && strings.HasPrefix(c.Dest, c.Source.Dataset+"/") {
 		return errors.New("recursive destination must not be beneath the source dataset")
 	}
@@ -231,7 +235,7 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 
 	sourceRunner := ZFSRunner(localZFS{})
 	if cfg.Source.Remote {
-		sourceRunner = remoteZFS{cfg.Source.SSHHost}
+		sourceRunner = remoteZFS{host: cfg.Source.SSHHost, identity: cfg.SSHKey}
 		l.info("source", "connecting to %s", cfg.Source.SSHHost)
 	}
 	if err := requireDataset(ctx, sourceRunner, cfg.Source.Dataset); err != nil {
@@ -735,15 +739,19 @@ func validateResumeToken(ctx context.Context, runner ZFSRunner, cfg Config, snap
 	return nil, 0, fmt.Errorf("resume target %s no longer exists on source", toName)
 }
 
-func sourceCommand(ctx context.Context, source Source, args ...string) *exec.Cmd {
+func sourceCommand(ctx context.Context, source Source, identity string, args ...string) *exec.Cmd {
 	if source.Remote {
-		return newCommand(ctx, "ssh", remoteArgs(source.SSHHost, args...)...)
+		return newCommand(ctx, "ssh", remoteArgs(source.SSHHost, identity, args...)...)
 	}
 	return newCommand(ctx, "zfs", args...)
 }
 
-func remoteArgs(host string, args ...string) []string {
-	ssh := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "--", host, "zfs"}
+func remoteArgs(host, identity string, args ...string) []string {
+	ssh := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}
+	if identity != "" {
+		ssh = append(ssh, "-o", "IdentitiesOnly=yes", "-i", identity)
+	}
+	ssh = append(ssh, "--", host, "zfs")
 	return append(ssh, args...)
 }
 
@@ -773,7 +781,7 @@ func replicate(ctx context.Context, cfg Config, base *snapshot, snapName, resume
 	if resumeToken != "" {
 		args = []string{"send", "-t", resumeToken}
 	}
-	send := sourceCommand(ctx, cfg.Source, args...)
+	send := sourceCommand(ctx, cfg.Source, cfg.SSHKey, args...)
 	recv := newCommand(ctx, "zfs", receiveArgs(cfg)...)
 	sendErr, recvErr := &limitedBuffer{limit: stderrLimit}, &limitedBuffer{limit: stderrLimit}
 	send.Stderr, recv.Stderr = sendErr, recvErr

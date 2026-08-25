@@ -97,6 +97,20 @@ sudo --preserve-env=SSH_AUTH_SOCK modd-zfs-backup \
 For a local source, grant the same permissions to the local account running
 `modd-zfs-backup`, or run the command as root.
 
+For unattended runs, select a private key directly instead of relying on an
+SSH agent:
+
+```sh
+sudo modd-zfs-backup \
+  --name server-a \
+  --source mzb-send@server-a:tank/data \
+  --dest backup/server-a/data \
+  --ssh-key /etc/modd-zfs-backup/server-a_ed25519
+```
+
+The option also sets OpenSSH's `IdentitiesOnly=yes`. It is rejected for local
+sources.
+
 ### Destination/receive role
 
 The receive side is always local. On Linux, running `modd-zfs-backup` as root
@@ -123,6 +137,61 @@ OpenZFS on Linux cannot delegate every mount-related operation, so this grant
 may still require root or a tightly controlled sudo policy. Test delegation
 with the exact installed OpenZFS version before scheduling unattended backups.
 See the [OpenZFS delegated administration documentation](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Operations/Delegated%20Administration.html).
+
+## systemd service
+
+Install the binary and supplied template units:
+
+```sh
+sudo install -m 0755 modd-zfs-backup /usr/local/bin/modd-zfs-backup
+sudo install -m 0644 contrib/systemd/modd-zfs-backup@.service \
+  contrib/systemd/modd-zfs-backup@.timer /etc/systemd/system/
+sudo install -d -m 0700 /etc/modd-zfs-backup
+```
+
+Create or install a dedicated SSH key readable only by root, then authorize its
+public key on the source host:
+
+```sh
+sudo ssh-keygen -t ed25519 -N '' \
+  -f /etc/modd-zfs-backup/fwtest_ed25519
+sudo chmod 0600 /etc/modd-zfs-backup/fwtest_ed25519
+```
+
+Before enabling the service, connect once interactively to verify and record
+the source host key in root's `known_hosts` file:
+
+```sh
+sudo ssh -i /etc/modd-zfs-backup/fwtest_ed25519 \
+  -o IdentitiesOnly=yes root@us-26081.modd.net.au zfs list modd/sites
+```
+
+Create `/etc/modd-zfs-backup/fwtest.conf` with permissions `0600`:
+
+```ini
+SOURCE=root@us-26081.modd.net.au:modd/sites
+DEST=rpool/backup-test/us-sites
+SSH_KEY=/etc/modd-zfs-backup/fwtest_ed25519
+RECURSIVE=true
+FULL=false
+HEALTHCHECK_URL=
+```
+
+The configuration filename and unit instance must match; `fwtest.conf` is used
+by `modd-zfs-backup@fwtest.service`, and `fwtest` becomes the backup name.
+Test and enable it with:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl start modd-zfs-backup@fwtest.service
+sudo journalctl -u modd-zfs-backup@fwtest.service
+sudo systemctl enable --now modd-zfs-backup@fwtest.timer
+systemctl list-timers 'modd-zfs-backup@*'
+```
+
+The first scheduled run starts five minutes after boot. Later runs are scheduled
+one hour after the previous service activation. If the oneshot service is still
+active when the timer elapses, systemd does not start a second instance.
 
 ## Behaviour
 

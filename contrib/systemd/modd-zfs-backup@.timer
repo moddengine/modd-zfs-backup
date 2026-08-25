@@ -1,0 +1,11 @@
+[Unit]
+Description=Run ZFS backup %i hourly from activation
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+AccuracySec=1min
+Unit=modd-zfs-backup@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -774,7 +774,7 @@ func TestIntegrationRemoteDestinationRejectedBeforeCommands(t *testing.T) {
 	}
 }
 
-func TestIntegrationCLIExposesAndRunsFullReplacement(t *testing.T) {
+func TestIntegrationCLIOptions(t *testing.T) {
 	requireIntegration(t)
 	binary := os.Getenv("MZB_BINARY")
 	if binary == "" {
@@ -782,8 +782,8 @@ func TestIntegrationCLIExposesAndRunsFullReplacement(t *testing.T) {
 	}
 	help := exec.Command(binary, "-h")
 	out, err := help.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "-full") {
-		t.Fatalf("CLI help does not expose --full: err=%v\n%s", err, out)
+	if err != nil || !strings.Contains(string(out), "-full") || !strings.Contains(string(out), "-ssh-key") {
+		t.Fatalf("CLI help does not expose --full and --ssh-key: err=%v\n%s", err, out)
 	}
 
 	name := "cli-full"
@@ -802,4 +802,13 @@ func TestIntegrationCLIExposesAndRunsFullReplacement(t *testing.T) {
 		t.Fatalf("CLI --full failed: %v\n%s", err, out)
 	}
 	assertProtected(t, cfg)
+
+	name = "cli-ssh-key"
+	source, dest, mount = resetDatasets(t, name)
+	writeData(t, mount, "payload", "explicit SSH identity through public CLI")
+	cmd = exec.Command(binary, "--name", name, "--source", "mzbsource@127.0.0.1:"+source, "--dest", dest, "--ssh-key", "/root/.ssh/id_ed25519")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("CLI --ssh-key failed: %v\n%s", err, out)
+	}
+	assertProtected(t, integrationConfig(name, source, dest, true, ""))
 }

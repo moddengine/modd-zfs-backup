@@ -50,6 +50,7 @@ func TestParseAndValidate(t *testing.T) {
 	for _, cfg := range []Config{
 		{Name: base.Name, Source: base.Source, Dest: "user@host:tank/data"},
 		{Name: base.Name, Source: Source{Dataset: "tank/data"}, Dest: "tank/data"},
+		{Name: base.Name, Source: base.Source, Dest: base.Dest, SSHKey: "/key"},
 		{Name: base.Name, Source: base.Source, Dest: "tank/backups/server-a", Recursive: true},
 		{Name: "bad/name", Source: base.Source, Dest: base.Dest},
 		{Name: base.Name, Source: base.Source, Dest: base.Dest, HealthcheckURL: "https://user:pass@example.test/ping"},
@@ -68,8 +69,9 @@ func TestCommandArguments(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("send args: got %#v, want %#v", got, want)
 	}
-	ssh := sourceCommand(context.Background(), cfg.Source, "list", "tank/data")
-	if filepath.Base(ssh.Path) != "ssh" || !strings.Contains(strings.Join(ssh.Args, " "), "BatchMode=yes") || !strings.Contains(strings.Join(ssh.Args, " "), "-- backup@host zfs list tank/data") {
+	ssh := sourceCommand(context.Background(), cfg.Source, "/etc/modd-zfs-backup/key", "list", "tank/data")
+	sshArgs := strings.Join(ssh.Args, " ")
+	if filepath.Base(ssh.Path) != "ssh" || !strings.Contains(sshArgs, "BatchMode=yes") || !strings.Contains(sshArgs, "IdentitiesOnly=yes -i /etc/modd-zfs-backup/key -- backup@host zfs list tank/data") {
 		t.Fatalf("remote command: %#v", ssh.Args)
 	}
 	recv := receiveArgs(cfg)
