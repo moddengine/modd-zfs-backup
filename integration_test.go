@@ -773,3 +773,33 @@ func TestIntegrationRemoteDestinationRejectedBeforeCommands(t *testing.T) {
 		t.Fatalf("validation invoked external commands:\n%s", log)
 	}
 }
+
+func TestIntegrationCLIExposesAndRunsFullReplacement(t *testing.T) {
+	requireIntegration(t)
+	binary := os.Getenv("MZB_BINARY")
+	if binary == "" {
+		t.Skip("MZB_BINARY is set by the VM harness")
+	}
+	help := exec.Command(binary, "-h")
+	out, err := help.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "-full") {
+		t.Fatalf("CLI help does not expose --full: err=%v\n%s", err, out)
+	}
+
+	name := "cli-full"
+	source, dest, mount := resetDatasets(t, name)
+	writeData(t, mount, "payload", "full replacement through public CLI")
+	realZFS(t, "snapshot", source+"@mzb-"+name+"-old")
+	realZFS(t, "create", dest)
+	cfg := integrationConfig(name, source, dest, false, "")
+	cfg.Full = true
+	for prop, value := range ownershipValues(cfg) {
+		realZFS(t, "set", prop+"="+value, dest)
+	}
+	realZFS(t, "snapshot", dest+"@mzb-"+name+"-old")
+	cmd := exec.Command(binary, "--name", name, "--source", source, "--dest", dest, "--full")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("CLI --full failed: %v\n%s", err, out)
+	}
+	assertProtected(t, cfg)
+}
