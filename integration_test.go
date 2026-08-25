@@ -283,6 +283,7 @@ func TestIntegrationGUIDMismatchAndUnownedDestinationBothModes(t *testing.T) {
 			realZFS(t, "snapshot", source+"@mzb-"+name+"-old")
 			realZFS(t, "create", dest)
 			cfg := integrationConfig(name, source, dest, remote, "")
+			cfg.Full = true
 			before := len(matchingSnapshots(t, source, name))
 			if err := execute(context.Background(), cfg, logger{io.Discard}); err == nil || !strings.Contains(err.Error(), "not owned") {
 				t.Fatalf("unowned destination error: %v", err)
@@ -294,9 +295,20 @@ func TestIntegrationGUIDMismatchAndUnownedDestinationBothModes(t *testing.T) {
 				realZFS(t, "set", prop+"="+value, dest)
 			}
 			realZFS(t, "snapshot", dest+"@mzb-"+name+"-old")
+			cfg.Full = false
 			if err := execute(context.Background(), cfg, logger{io.Discard}); err == nil || !strings.Contains(err.Error(), "no common snapshot") {
 				t.Fatalf("GUID mismatch error: %v", err)
 			}
+			cfg.Full = true
+			realZFS(t, "hold", "external-test", dest+"@mzb-"+name+"-old")
+			if err := execute(context.Background(), cfg, logger{io.Discard}); err == nil {
+				t.Fatal("--full bypassed an external destination hold")
+			}
+			realZFS(t, "release", "external-test", dest+"@mzb-"+name+"-old")
+			if err := execute(context.Background(), cfg, logger{io.Discard}); err != nil {
+				t.Fatal(err)
+			}
+			assertProtected(t, cfg)
 		})
 	}
 }

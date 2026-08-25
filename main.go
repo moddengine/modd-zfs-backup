@@ -45,7 +45,7 @@ type Source struct {
 type Config struct {
 	Name, Dest, HealthcheckURL string
 	Source                     Source
-	Recursive, Progress        bool
+	Recursive, Progress, Full  bool
 }
 
 type ZFSRunner interface {
@@ -108,6 +108,7 @@ func main() {
 	flag.StringVar(&rawSource, "source", "", "local dataset or user@host:dataset")
 	flag.StringVar(&cfg.Dest, "dest", "", "local destination dataset")
 	flag.StringVar(&cfg.HealthcheckURL, "healthcheck-url", "", "Healthchecks.io ping URL")
+	flag.BoolVar(&cfg.Full, "full", false, "replace an owned destination when no common snapshot exists")
 	flag.BoolVar(&cfg.Recursive, "recursive", false, "mirror descendant datasets")
 	flag.BoolVar(&cfg.Progress, "progress", false, "show interactive transfer progress")
 	flag.Parse()
@@ -126,6 +127,7 @@ func main() {
 	l.info("config", "backup name=%s", cfg.Name)
 	l.info("config", "source=%s", formatSource(cfg.Source))
 	l.info("config", "destination=%s", cfg.Dest)
+	l.info("config", "full=%t", cfg.Full)
 	l.info("config", "recursive=%t", cfg.Recursive)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -307,6 +309,7 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 		}
 	}
 	var target *snapshot
+	replaceDest := false
 	mode := modeFull
 	total := int64(0)
 	if resumeToken != "" {
@@ -317,8 +320,11 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 		}
 		mode = modeResume
 	} else if destExists && base == nil {
-		startHealthcheck(ctx, cfg, l)
-		return failRun(ctx, cfg, l, started, "common", "", errors.New("existing destination has no common snapshot; refusing destructive full replacement"), true)
+		if !cfg.Full {
+			startHealthcheck(ctx, cfg, l)
+			return failRun(ctx, cfg, l, started, "common", "", errors.New("existing destination has no common snapshot; use --full to replace this owned destination"), true)
+		}
+		replaceDest = true
 	} else if len(sourceSnaps) > 0 && (base == nil || sourceSnaps[len(sourceSnaps)-1].GUID != base.GUID) {
 		target = &sourceSnaps[len(sourceSnaps)-1]
 		if base == nil {
@@ -347,6 +353,14 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 	}
 
 	startHealthcheck(ctx, cfg, l)
+	if replaceDest {
+		l.warn("destination", "--full replacing owned destination %s because no common snapshot exists", cfg.Dest)
+		if err := replaceDestination(ctx, destRunner, cfg, destSnaps, l); err != nil {
+			return failRun(ctx, cfg, l, started, "destination", "", err, true)
+		}
+		destSnaps = nil
+		l.info("destination", "old destination destroyed; full receive will recreate it")
+	}
 	if target == nil {
 		created := snapshot{Name: fmt.Sprintf("mzb-%s-%d", cfg.Name, time.Now().UnixNano()), When: time.Now()}
 		path := cfg.Source.Dataset + "@" + created.Name
@@ -592,6 +606,29 @@ func setDestinationProperties(ctx context.Context, runner ZFSRunner, cfg Config)
 		args = append(args, prop+"="+value)
 	}
 	return runner.Run(ctx, append(args, cfg.Dest)...)
+}
+
+func replaceDestination(ctx context.Context, runner ZFSRunner, cfg Config, snaps []snapshot, l logger) error {
+	tag := "mzb-" + cfg.Name
+	for _, snap := range snaps {
+		path := cfg.Dest + "@" + snap.Name
+		held, err := hasHold(ctx, runner, path, tag)
+		if err != nil {
+			return err
+		}
+		if !held {
+			continue
+		}
+		l.info("destination", "releasing application hold from %s before full replacement", snap.Name)
+		args := []string{"release"}
+		if cfg.Recursive {
+			args = append(args, "-r")
+		}
+		if err := runner.Run(ctx, append(args, tag, path)...); err != nil {
+			return err
+		}
+	}
+	return runner.Run(ctx, "destroy", "-r", cfg.Dest)
 }
 
 func receiveArgs(cfg Config) []string {

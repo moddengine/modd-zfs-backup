@@ -165,6 +165,22 @@ func TestCleanupFailuresRemainBestEffort(t *testing.T) {
 	}
 }
 
+func TestFullReplacementReleasesOnlyApplicationHolds(t *testing.T) {
+	runner := &fakeRunner{output: map[string]string{
+		"holds -H backup/data@mzb-test-owned":    "backup/data@mzb-test-owned\tmzb-test\t1\n",
+		"holds -H backup/data@mzb-test-external": "backup/data@mzb-test-external\texternal\t1\n",
+	}}
+	cfg := Config{Name: "test", Dest: "backup/data", Recursive: true}
+	snaps := []snapshot{{Name: "mzb-test-owned"}, {Name: "mzb-test-external"}}
+	if err := replaceDestination(context.Background(), runner, cfg, snaps, logger{io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(runner.calls, "\n")
+	if !strings.Contains(joined, "release -r mzb-test backup/data@mzb-test-owned") || strings.Contains(joined, "release -r mzb-test backup/data@mzb-test-external") || !strings.Contains(joined, "destroy -r backup/data") {
+		t.Fatalf("replacement calls:\n%s", joined)
+	}
+}
+
 func TestHoldsAndCleanup(t *testing.T) {
 	runner := &fakeRunner{output: map[string]string{
 		"holds -H tank/data@mzb-test-new": "tank/data@mzb-test-new\tmzb-test\t1\n",
