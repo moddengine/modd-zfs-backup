@@ -552,12 +552,29 @@ func TestIntegrationDivergenceAndMissedIntervalsBothModes(t *testing.T) {
 			if err := execute(context.Background(), cfg, logger{io.Discard}); err != nil {
 				t.Fatal(err)
 			}
-			if got := assertProtected(t, cfg); got.Name != "mzb-"+name+"-missedc" {
-				t.Fatalf("recovered snapshot %s, want newest missed snapshot", got.Name)
+			sourceSnaps := matchingSnapshots(t, source, name)
+			destSnaps := matchingSnapshots(t, dest, name)
+			wantNames := []string{"mzb-" + name + "-misseda", "mzb-" + name + "-missedb", "mzb-" + name + "-missedc"}
+			if len(sourceSnaps) != 1 || sourceSnaps[0].Name != wantNames[2] || len(destSnaps) != len(wantNames) {
+				t.Fatalf("unexpected recovered snapshots: source=%#v destination=%#v", sourceSnaps, destSnaps)
+			}
+			for i, want := range wantNames {
+				if destSnaps[i].Name != want {
+					t.Fatalf("destination snapshot %d = %s, want %s", i, destSnaps[i].Name, want)
+				}
+			}
+			if sourceSnaps[0].GUID != destSnaps[2].GUID {
+				t.Fatal("newest recovered snapshot GUID differs between source and destination")
+			}
+			for _, path := range []string{source + "@" + wantNames[2], dest + "@" + wantNames[2]} {
+				held, err := hasHold(context.Background(), localZFS{}, path, "mzb-"+name)
+				if err != nil || !held {
+					t.Fatalf("snapshot %s is not protected: held=%t err=%v", path, held, err)
+				}
 			}
 			commands, _ := os.ReadFile(commandLog)
-			if !strings.Contains(string(commands), "send -i ") {
-				t.Fatalf("missed-interval recovery was not incremental:\n%s", commands)
+			if !strings.Contains(string(commands), "send -I ") {
+				t.Fatalf("missed-interval recovery did not include intermediate snapshots:\n%s", commands)
 			}
 		})
 	}
@@ -780,10 +797,16 @@ func TestIntegrationCLIOptions(t *testing.T) {
 	if binary == "" {
 		t.Skip("MZB_BINARY is set by the VM harness")
 	}
-	help := exec.Command(binary, "-h")
+	help := exec.Command(binary, "--help")
 	out, err := help.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "-full") || !strings.Contains(string(out), "-ssh-key") {
+	if err != nil || !strings.Contains(string(out), "--full") || !strings.Contains(string(out), "--ssh-key") {
 		t.Fatalf("CLI help does not expose --full and --ssh-key: err=%v\n%s", err, out)
+	}
+	if out, err := exec.Command(binary, "--version").CombinedOutput(); err != nil || string(out) != "modd-zfs-backup dev\n" {
+		t.Fatalf("CLI --version failed: err=%v output=%q", err, out)
+	}
+	if err := exec.Command(binary, "-h").Run(); err == nil {
+		t.Fatal("CLI accepted single-dash help")
 	}
 
 	name := "cli-full"
@@ -797,7 +820,7 @@ func TestIntegrationCLIOptions(t *testing.T) {
 		realZFS(t, "set", prop+"="+value, dest)
 	}
 	realZFS(t, "snapshot", dest+"@mzb-"+name+"-old")
-	cmd := exec.Command(binary, "--name", name, "--source", source, "--dest", dest, "--full")
+	cmd := exec.Command(binary, "--name", name, "--source", source, "--dest", dest, "--full", "--skip-intermediate")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("CLI --full failed: %v\n%s", err, out)
 	}

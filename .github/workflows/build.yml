@@ -39,7 +39,8 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: linux
           GOARCH: ${{ matrix.goarch }}
-        run: go build -trimpath -ldflags="-s -w" -o "dist/modd-zfs-backup-linux-${GOARCH}" .
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+        run: go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "dist/modd-zfs-backup-linux-${GOARCH}" .
       - uses: actions/upload-artifact@v7
         with:
           name: modd-zfs-backup-linux-${{ matrix.goarch }}

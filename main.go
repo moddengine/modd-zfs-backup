@@ -29,6 +29,7 @@ const (
 )
 
 var minimumInterval = 5 * time.Minute
+var version = "dev"
 
 var (
 	nameRE        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -43,9 +44,9 @@ type Source struct {
 }
 
 type Config struct {
-	Name, Dest, HealthcheckURL, SSHKey             string
-	Source                                         Source
-	Recursive, Progress, Full, IncludeIntermediate bool
+	Name, Dest, HealthcheckURL, SSHKey          string
+	Source                                      Source
+	Recursive, Progress, Full, SkipIntermediate bool
 }
 
 type ZFSRunner interface {
@@ -102,18 +103,17 @@ func (l logger) warn(step, format string, args ...any) { l.log("WARN", step, for
 func (l logger) err(step, format string, args ...any)  { l.log("ERROR", step, format, args...) }
 
 func main() {
-	var rawSource string
-	var cfg Config
-	flag.StringVar(&cfg.Name, "name", "", "backup name")
-	flag.StringVar(&rawSource, "source", "", "local dataset or user@host:dataset")
-	flag.StringVar(&cfg.Dest, "dest", "", "local destination dataset")
-	flag.StringVar(&cfg.HealthcheckURL, "healthcheck-url", "", "Healthchecks.io ping URL")
-	flag.StringVar(&cfg.SSHKey, "ssh-key", "", "SSH private key for a remote source")
-	flag.BoolVar(&cfg.Full, "full", false, "replace an owned destination when no common snapshot exists")
-	flag.BoolVar(&cfg.Recursive, "recursive", false, "mirror descendant datasets")
-	flag.BoolVar(&cfg.IncludeIntermediate, "include-intermediate", false, "include intermediate snapshots in incremental sends")
-	flag.BoolVar(&cfg.Progress, "progress", false, "show interactive transfer progress")
-	flag.Parse()
+	cfg, rawSource, showVersion, err := parseCLI(os.Args[0], os.Args[1:], os.Stderr)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
+		os.Exit(2)
+	}
+	if showVersion {
+		fmt.Printf("modd-zfs-backup %s\n", version)
+		return
+	}
 
 	l := logger{os.Stderr}
 	l.info("startup", "modd-zfs-backup starting")
@@ -131,13 +131,70 @@ func main() {
 	l.info("config", "destination=%s", cfg.Dest)
 	l.info("config", "full=%t", cfg.Full)
 	l.info("config", "recursive=%t", cfg.Recursive)
-	l.info("config", "include-intermediate=%t", cfg.IncludeIntermediate)
+	l.info("config", "skip-intermediate=%t", cfg.SkipIntermediate)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := execute(ctx, cfg, l); err != nil {
 		os.Exit(1)
 	}
+}
+
+func parseCLI(name string, args []string, output io.Writer) (Config, string, bool, error) {
+	var rawSource string
+	var cfg Config
+	var showVersion bool
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(output)
+	flags.StringVar(&cfg.Name, "name", "", "backup name")
+	flags.StringVar(&rawSource, "source", "", "local dataset or user@host:dataset")
+	flags.StringVar(&cfg.Dest, "dest", "", "local destination dataset")
+	flags.StringVar(&cfg.HealthcheckURL, "healthcheck-url", "", "Healthchecks.io ping URL")
+	flags.StringVar(&cfg.SSHKey, "ssh-key", "", "SSH private key for a remote source")
+	flags.BoolVar(&cfg.Full, "full", false, "replace an owned destination when no common snapshot exists")
+	flags.BoolVar(&cfg.Recursive, "recursive", false, "mirror descendant datasets")
+	flags.BoolVar(&cfg.SkipIntermediate, "skip-intermediate", false, "exclude intermediate snapshots from incremental sends")
+	flags.BoolVar(&cfg.Progress, "progress", false, "show interactive transfer progress")
+	flags.BoolVar(&showVersion, "version", false, "show version")
+	flags.Usage = func() {
+		fmt.Fprintf(output, "Usage of %s:\n", name)
+		var defaults bytes.Buffer
+		flags.SetOutput(&defaults)
+		flags.PrintDefaults()
+		flags.SetOutput(output)
+		fmt.Fprint(output, strings.ReplaceAll(defaults.String(), "  -", "  --"))
+	}
+	if err := requireDoubleDash(flags, args); err != nil {
+		fmt.Fprintln(output, err)
+		flags.Usage()
+		return Config{}, "", false, err
+	}
+	if err := flags.Parse(args); err != nil {
+		return Config{}, "", false, err
+	}
+	return cfg, rawSource, showVersion, nil
+}
+
+func requireDoubleDash(flags *flag.FlagSet, args []string) error {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" || !strings.HasPrefix(arg, "-") {
+			break
+		}
+		if !strings.HasPrefix(arg, "--") {
+			return fmt.Errorf("single-dash options are not supported: %s", arg)
+		}
+		name, _, hasValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		option := flags.Lookup(name)
+		if option == nil || hasValue {
+			continue
+		}
+		boolOption, ok := option.Value.(interface{ IsBoolFlag() bool })
+		if !ok || !boolOption.IsBoolFlag() {
+			i++
+		}
+	}
+	return nil
 }
 
 func parseSource(s string) (Source, error) {
@@ -679,9 +736,9 @@ func sendArgs(cfg Config, base *snapshot, snapName string, estimate, raw bool) [
 		args = append(args, "-R")
 	}
 	if base != nil {
-		incremental := "-i"
-		if cfg.IncludeIntermediate {
-			incremental = "-I"
+		incremental := "-I"
+		if cfg.SkipIntermediate {
+			incremental = "-i"
 		}
 		args = append(args, incremental, cfg.Source.Dataset+"@"+base.Name)
 	}

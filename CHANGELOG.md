@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-26
+
+### Added
+
+- Added `--version` output for release and development builds.
+
+### Changed
+
+- Intermediate snapshots are now replicated by default; use
+  `--skip-intermediate` to exclude them.
+- CLI options now require their canonical double-dash form.
+
 ## [0.2.1] - 2026-08-25
 
 ### Added
@@ -58,7 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Nix development tooling and GitHub Actions builds for static Linux
   amd64 and arm64 binaries.
 
-[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.1...v1.0.0
 [0.2.1]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/moddengine/modd-zfs-backup/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/moddengine/modd-zfs-backup/compare/v0.1.0...v0.1.1

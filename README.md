@@ -2,7 +2,7 @@
 
 `modd-zfs-backup` receives a local or SSH-hosted ZFS dataset into a local,
 dedicated backup dataset. The destination is always managed by the machine
-running the command.
+running the command. Options require their double-dash form, such as `--name`.
 
 ## Examples
 
@@ -23,6 +23,8 @@ sudo modd-zfs-backup \
   --source tank/data \
   --dest backup/local-data
 ```
+
+Print the build version with `modd-zfs-backup --version`.
 
 Mirror a complete dataset tree. Recursive mode uses ZFS replication streams
 and may remove destination-only descendants:
@@ -174,7 +176,7 @@ DEST=rpool/backup-test/us-sites
 SSH_KEY=/etc/modd-zfs-backup/fwtest_ed25519
 RECURSIVE=true
 FULL=false
-INCLUDE_INTERMEDIATE=false
+SKIP_INTERMEDIATE=false
 HEALTHCHECK_URL=
 ```
 
@@ -207,9 +209,10 @@ short, transcribable key that changes about every 4 minutes 16 seconds. A
 numeric suffix prevents collisions if more than one snapshot is needed in the
 same interval. Older decimal snapshot names remain valid replication bases.
 
-`--include-intermediate` uses `zfs send -I` for incremental transfers so that
-snapshots created between application snapshots, such as Sanoid's time-based
-snapshots, are also replicated. On the destination, configure Sanoid with
+Incremental transfers use `zfs send -I`, so snapshots created between
+application snapshots, such as Sanoid's time-based snapshots, are also
+replicated by default. Use `--skip-intermediate` to send only the target
+snapshot. On the destination, configure Sanoid with
 `autosnap=no` and `autoprune=yes`: creating destination-only snapshots still
 causes non-recursive backups to stop and recursive receives may remove them.
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"net/http"
 	"os"
@@ -62,16 +63,16 @@ func TestParseAndValidate(t *testing.T) {
 }
 
 func TestCommandArguments(t *testing.T) {
-	cfg := Config{Name: "server-a", Source: Source{Remote: true, SSHHost: "backup@host", Dataset: "tank/data"}, Dest: "backup/server-a", Recursive: true, IncludeIntermediate: true}
+	cfg := Config{Name: "server-a", Source: Source{Remote: true, SSHHost: "backup@host", Dataset: "tank/data"}, Dest: "backup/server-a", Recursive: true}
 	base := &snapshot{Name: "mzb-server-a-old"}
 	got := sendArgs(cfg, base, "mzb-server-a-new", true, true)
 	want := []string{"send", "-nP", "-w", "-R", "-I", "tank/data@mzb-server-a-old", "tank/data@mzb-server-a-new"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("send args: got %#v, want %#v", got, want)
 	}
-	cfg.IncludeIntermediate = false
+	cfg.SkipIntermediate = true
 	if got := sendArgs(cfg, base, "mzb-server-a-new", false, false); got[2] != "-i" {
-		t.Fatalf("default incremental flag: got %#v", got)
+		t.Fatalf("skip-intermediate flag: got %#v", got)
 	}
 	ssh := sourceCommand(context.Background(), cfg.Source, "/etc/modd-zfs-backup/key", "list", "tank/data")
 	sshArgs := strings.Join(ssh.Args, " ")
@@ -84,6 +85,33 @@ func TestCommandArguments(t *testing.T) {
 		if !strings.Contains(joined, required) {
 			t.Errorf("receive args missing %q: %s", required, joined)
 		}
+	}
+}
+
+func TestCLIFlags(t *testing.T) {
+	var output bytes.Buffer
+	cfg, source, showVersion, err := parseCLI("modd-zfs-backup", []string{"--name", "test", "--source", "tank/data", "--dest", "backup/data", "--skip-intermediate"}, &output)
+	if err != nil || cfg.Name != "test" || source != "tank/data" || !cfg.SkipIntermediate || showVersion {
+		t.Fatalf("parseCLI() = %#v, %q, %t, %v", cfg, source, showVersion, err)
+	}
+
+	output.Reset()
+	_, _, _, err = parseCLI("modd-zfs-backup", []string{"--help"}, &output)
+	if !errors.Is(err, flag.ErrHelp) || !strings.Contains(output.String(), "  --skip-intermediate") || strings.Contains(output.String(), "\n  -skip-intermediate") {
+		t.Fatalf("double-dash help: err=%v\n%s", err, output.String())
+	}
+
+	for _, args := range [][]string{{"-h"}, {"-name", "test"}, {"--include-intermediate"}} {
+		output.Reset()
+		if _, _, _, err := parseCLI("modd-zfs-backup", args, &output); err == nil {
+			t.Fatalf("parseCLI(%q) accepted removed or single-dash option", args)
+		}
+	}
+
+	output.Reset()
+	_, _, showVersion, err = parseCLI("modd-zfs-backup", []string{"--version"}, &output)
+	if err != nil || !showVersion {
+		t.Fatalf("--version: show=%t err=%v", showVersion, err)
 	}
 }
 
