@@ -221,8 +221,9 @@ snapshot. On the destination, configure Sanoid with
 causes non-recursive backups to stop and recursive receives may remove them.
 
 Logs go to stderr in a journald-friendly format. `--healthcheck-url` enables
-`/start`, success, and `/fail` lifecycle pings. Minimum-interval and concurrent
-run skips make no request.
+`/start`, success, and `/fail` lifecycle pings; success and failure pings include
+up to 100 kB of the run log. Minimum-interval and concurrent run skips make no
+request.
 
 ## Tests
 

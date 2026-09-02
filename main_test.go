@@ -297,22 +297,26 @@ func TestLockRejectsInvalidPathAndSymlink(t *testing.T) {
 }
 
 func TestHealthcheckLifecycleAndURLPath(t *testing.T) {
-	var paths []string
+	var requests []string
 	oldTransport := http.DefaultTransport
 	http.DefaultTransport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		paths = append(paths, r.URL.RequestURI())
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+		}
+		requests = append(requests, r.Method+" "+r.URL.RequestURI()+" "+string(body))
 		return &http.Response{StatusCode: http.StatusNoContent, Status: "204 No Content", Body: io.NopCloser(strings.NewReader(""))}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = oldTransport })
-	l := logger{io.Discard}
+	l := newLogger(io.Discard)
+	l.info("test", "backup log")
 	for _, suffix := range []string{"start", "", "fail"} {
 		if err := pingHealthcheck(context.Background(), "https://example.test/uuid?source=test", suffix, l); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want := []string{"/uuid/start?source=test", "/uuid?source=test", "/uuid/fail?source=test"}
-	if !reflect.DeepEqual(paths, want) {
-		t.Fatalf("paths: got %#v, want %#v", paths, want)
+	if requests[0] != "GET /uuid/start?source=test " || !strings.HasPrefix(requests[1], "POST /uuid?source=test ") || !strings.Contains(requests[1], "INFO test: backup log") || !strings.HasPrefix(requests[2], "POST /uuid/fail?source=test ") || !strings.Contains(requests[2], "INFO test: backup log") {
+		t.Fatalf("requests: %#v", requests)
 	}
 }
 

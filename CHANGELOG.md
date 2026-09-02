@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-02
+
 ### Added
 
 - Added an optional `NAME` systemd configuration variable to override the unit
@@ -15,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The systemd unit now defaults `FULL` to `false` and `SSH_KEY` to empty.
+- Successful and failed Healthchecks.io notifications now include the run log.
 
 ## [1.0.0] - 2026-08-26
 
@@ -79,7 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Nix development tooling and GitHub Actions builds for static Linux
   amd64 and arm64 binaries.
 
-[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/moddengine/modd-zfs-backup/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.1...v1.0.0
 [0.2.1]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/moddengine/modd-zfs-backup/compare/v0.1.1...v0.2.0

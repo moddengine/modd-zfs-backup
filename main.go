@@ -21,11 +21,12 @@ import (
 )
 
 const (
-	clockSkewLimit  = 30 * time.Second
-	stderrLimit     = 64 << 10
-	ownerNameProp   = "com.modd:backup-name"
-	ownerSourceProp = "com.modd:backup-source"
-	ownerRecurProp  = "com.modd:backup-recursive"
+	clockSkewLimit      = 30 * time.Second
+	stderrLimit         = 64 << 10
+	healthcheckLogLimit = 100_000
+	ownerNameProp       = "com.modd:backup-name"
+	ownerSourceProp     = "com.modd:backup-source"
+	ownerRecurProp      = "com.modd:backup-recursive"
 )
 
 var minimumInterval = 5 * time.Minute
@@ -92,6 +93,27 @@ const (
 
 type logger struct{ out io.Writer }
 
+type logWriter struct {
+	out  io.Writer
+	logs limitedBuffer
+}
+
+func newLogger(out io.Writer) logger {
+	return logger{&logWriter{out: out, logs: limitedBuffer{limit: healthcheckLogLimit}}}
+}
+
+func (w *logWriter) Write(p []byte) (int, error) {
+	_, _ = w.logs.Write(p)
+	return w.out.Write(p)
+}
+
+func (l logger) captured() string {
+	if out, ok := l.out.(*logWriter); ok {
+		return out.logs.String()
+	}
+	return ""
+}
+
 func (l logger) log(level, step, format string, args ...any) {
 	message := strings.ReplaceAll(fmt.Sprintf(format, args...), "\r", "")
 	for _, line := range strings.Split(message, "\n") {
@@ -115,7 +137,7 @@ func main() {
 		return
 	}
 
-	l := logger{os.Stderr}
+	l := newLogger(os.Stderr)
 	l.info("startup", "modd-zfs-backup starting")
 	source, err := parseSource(rawSource)
 	if err == nil {
@@ -490,10 +512,10 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 	if err := ctx.Err(); err != nil {
 		return failRun(ctx, cfg, l, started, "cleanup", target.Name, err, true)
 	}
+	l.info("complete", "backup %s completed snapshot=%s mode=%s bytes=%s duration=%s", cfg.Name, target.Name, mode, formatBytes(bytesSent), time.Since(started).Round(time.Second))
 	if err := pingHealthcheck(ctx, cfg.HealthcheckURL, "", l); err != nil {
 		l.warn("healthcheck", "success notification failed: %v", err)
 	}
-	l.info("complete", "backup %s completed snapshot=%s mode=%s bytes=%s duration=%s", cfg.Name, target.Name, mode, formatBytes(bytesSent), time.Since(started).Round(time.Second))
 	return nil
 }
 
@@ -1119,9 +1141,19 @@ func pingHealthcheck(ctx context.Context, base, suffix string, l logger) error {
 	if suffix != "" {
 		u.Path = strings.TrimRight(u.Path, "/") + "/" + suffix
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	method := http.MethodGet
+	var body io.Reader
+	logs := l.captured()
+	if suffix != "start" && logs != "" {
+		method = http.MethodPost
+		body = strings.NewReader(logs)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "text/plain; charset=utf-8")
 	}
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
@@ -1143,6 +1175,7 @@ func startHealthcheck(ctx context.Context, cfg Config, l logger) {
 
 func failRun(ctx context.Context, cfg Config, l logger, started time.Time, step, snap string, err error, attempted bool) error {
 	l.err(step, "%v", err)
+	result := finishFailure(cfg, l, started, step, snap, err)
 	if attempted {
 		pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
@@ -1150,7 +1183,7 @@ func failRun(ctx context.Context, cfg Config, l logger, started time.Time, step,
 			l.warn("healthcheck", "failure notification failed: %v", pingErr)
 		}
 	}
-	return finishFailure(cfg, l, started, step, snap, err)
+	return result
 }
 
 func finishFailure(cfg Config, l logger, started time.Time, step, snap string, err error) error {
