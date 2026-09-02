@@ -6,7 +6,9 @@ After=network-online.target
 [Service]
 Type=oneshot
 Environment=NAME=%i
+Environment=FULL=false
 Environment=SKIP_INTERMEDIATE=false
+Environment=SSH_KEY=
 EnvironmentFile=/etc/modd-zfs-backup/%i.conf
 ExecStart=/usr/local/bin/modd-zfs-backup --name ${NAME} --source=${SOURCE} --dest=${DEST} --ssh-key=${SSH_KEY} --recursive=${RECURSIVE} --full=${FULL} --skip-intermediate=${SKIP_INTERMEDIATE} --healthcheck-url=${HEALTHCHECK_URL}
 TimeoutStartSec=infinity

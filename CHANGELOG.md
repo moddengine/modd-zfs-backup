@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an optional `NAME` systemd configuration variable to override the unit
   instance in snapshot names.
 
+### Changed
+
+- The systemd unit now defaults `FULL` to `false` and `SSH_KEY` to empty.
+
 ## [1.0.0] - 2026-08-26
 
 ### Added

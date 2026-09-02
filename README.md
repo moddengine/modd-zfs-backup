@@ -184,6 +184,8 @@ HEALTHCHECK_URL=
 The configuration filename and unit instance must match; `fwtest.conf` is used
 by `modd-zfs-backup@fwtest.service`. The unit instance is also the default
 backup name; uncomment `NAME` to override it for snapshot names.
+`FULL` and `SKIP_INTERMEDIATE` default to `false`, and `SSH_KEY` defaults to
+empty when omitted.
 Test and enable it with:
 
 ```sh
