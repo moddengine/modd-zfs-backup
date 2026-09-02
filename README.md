@@ -171,6 +171,7 @@ sudo ssh -i /etc/modd-zfs-backup/fwtest_ed25519 \
 Create `/etc/modd-zfs-backup/fwtest.conf` with permissions `0600`:
 
 ```ini
+# NAME=us-sites
 SOURCE=root@us-26081.modd.net.au:modd/sites
 DEST=rpool/backup-test/us-sites
 SSH_KEY=/etc/modd-zfs-backup/fwtest_ed25519
@@ -181,7 +182,8 @@ HEALTHCHECK_URL=
 ```
 
 The configuration filename and unit instance must match; `fwtest.conf` is used
-by `modd-zfs-backup@fwtest.service`, and `fwtest` becomes the backup name.
+by `modd-zfs-backup@fwtest.service`. The unit instance is also the default
+backup name; uncomment `NAME` to override it for snapshot names.
 Test and enable it with:
 
 ```sh
