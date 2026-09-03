@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -303,7 +304,7 @@ func formatSource(s Source) string {
 
 func execute(ctx context.Context, cfg Config, l logger) error {
 	started := time.Now()
-	lock, acquired, err := acquireLock(cfg.Name)
+	lock, acquired, err := acquireLock(lockName(cfg))
 	if err != nil {
 		return finishFailure(cfg, l, started, "lock", "", err)
 	}
@@ -541,6 +542,10 @@ func lockDirectory() string {
 		return dir
 	}
 	return "/run/lock/modd-zfs-backup"
+}
+
+func lockName(cfg Config) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(formatSource(cfg.Source)+"\n"+cfg.Dest)))
 }
 
 func acquireLock(name string) (*os.File, bool, error) {

@@ -258,19 +258,26 @@ func TestLoggerPrefixesMultilineAndCommandErrorIsBounded(t *testing.T) {
 
 func TestLockContention(t *testing.T) {
 	t.Setenv("MODD_ZFS_BACKUP_LOCK_DIR", t.TempDir())
-	first, acquired, err := acquireLock("test")
+	cfg := Config{Name: "test", Source: Source{Dataset: "tank/data"}, Dest: "backup/data"}
+	first, acquired, err := acquireLock(lockName(cfg))
 	if err != nil || !acquired {
 		t.Fatalf("first lock: %t, %v", acquired, err)
 	}
 	defer first.Close()
-	second, acquired, err := acquireLock("test")
+	second, acquired, err := acquireLock(lockName(cfg))
 	if err != nil || acquired || second != nil {
 		t.Fatalf("second lock: %#v, %t, %v", second, acquired, err)
 	}
 	var logs bytes.Buffer
-	if err := execute(context.Background(), Config{Name: "test"}, logger{&logs}); err != nil || !strings.Contains(logs.String(), " INFO skip:") {
+	if err := execute(context.Background(), cfg, logger{&logs}); err != nil || !strings.Contains(logs.String(), " INFO skip:") {
 		t.Fatalf("contended execute: err=%v logs=%q", err, logs.String())
 	}
+
+	other, acquired, err := acquireLock(lockName(Config{Name: "test", Source: Source{Dataset: "tank/other"}, Dest: "backup/other"}))
+	if err != nil || !acquired {
+		t.Fatalf("different datasets share lock: %t, %v", acquired, err)
+	}
+	other.Close()
 }
 
 func TestLockRejectsInvalidPathAndSymlink(t *testing.T) {
