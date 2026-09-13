@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-14
+
+### Added
+
+- Replication failures caused by destination modifications now log the exact
+  `zfs rollback` command needed before retrying.
+
+### Fixed
+
+- Recursive replication now preserves child datasets that no longer exist on
+  the source, retaining them as part of the backup.
+
 ## [1.1.0] - 2026-09-03
 
 ### Fixed
@@ -89,7 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Nix development tooling and GitHub Actions builds for static Linux
   amd64 and arm64 binaries.
 
-[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/moddengine/modd-zfs-backup/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/moddengine/modd-zfs-backup/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/moddengine/modd-zfs-backup/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/moddengine/modd-zfs-backup/compare/v0.2.1...v1.0.0

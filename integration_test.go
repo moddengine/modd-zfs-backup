@@ -313,7 +313,7 @@ func TestIntegrationGUIDMismatchAndUnownedDestinationBothModes(t *testing.T) {
 	}
 }
 
-func TestIntegrationRecursiveMirrorAndEncryption(t *testing.T) {
+func TestIntegrationRecursiveReplicationAndEncryption(t *testing.T) {
 	requireIntegration(t)
 	withInterval(t, 0)
 	for _, remote := range []bool{false, true} {
@@ -333,8 +333,8 @@ func TestIntegrationRecursiveMirrorAndEncryption(t *testing.T) {
 			if err := execute(context.Background(), cfg, logger{io.Discard}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := commandOutput(context.Background(), "/usr/sbin/zfs", "list", dest+"/destination-only"); err == nil {
-				t.Fatal("recursive mirror retained destination-only child")
+			if _, err := commandOutput(context.Background(), "/usr/sbin/zfs", "list", dest+"/destination-only"); err != nil {
+				t.Fatal("recursive replication deleted destination-only child")
 			}
 		})
 

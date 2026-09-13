@@ -175,7 +175,7 @@ func parseCLI(name string, args []string, output io.Writer) (Config, string, boo
 	flags.StringVar(&cfg.HealthcheckURL, "healthcheck-url", "", "Healthchecks.io ping URL")
 	flags.StringVar(&cfg.SSHKey, "ssh-key", "", "SSH private key for a remote source")
 	flags.BoolVar(&cfg.Full, "full", false, "replace an owned destination when no common snapshot exists")
-	flags.BoolVar(&cfg.Recursive, "recursive", false, "mirror descendant datasets")
+	flags.BoolVar(&cfg.Recursive, "recursive", false, "replicate descendant datasets")
 	flags.BoolVar(&cfg.SkipIntermediate, "skip-intermediate", false, "exclude intermediate snapshots from incremental sends")
 	flags.BoolVar(&cfg.Progress, "progress", false, "show interactive transfer progress")
 	flags.BoolVar(&showVersion, "version", false, "show version")
@@ -489,6 +489,11 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 			step := "send"
 			if errors.As(err, &pe) {
 				step = pe.Primary
+				if base != nil {
+					if command := rollbackCommand(pe.Receive, cfg.Dest, base.Name); command != "" {
+						l.warn("receive", "discard local destination changes before retrying with: %s", command)
+					}
+				}
 			}
 			return failRun(ctx, cfg, l, started, step, target.Name, err, true)
 		}
@@ -741,9 +746,6 @@ func replaceDestination(ctx context.Context, runner ZFSRunner, cfg Config, snaps
 
 func receiveArgs(cfg Config) []string {
 	args := []string{"receive", "-s", "-u"}
-	if cfg.Recursive {
-		args = append(args, "-F")
-	}
 	args = append(args, "-o", "readonly=on", "-o", "canmount=off", "-o", "mountpoint=none")
 	for prop, value := range ownershipValues(cfg) {
 		args = append(args, "-o", prop+"="+value)
@@ -863,6 +865,22 @@ func (e *pipelineError) Error() string {
 		parts = append(parts, "stream: "+e.Copy.Error())
 	}
 	return strings.Join(parts, "\n")
+}
+
+func rollbackCommand(err error, dest, snapshot string) string {
+	if err == nil {
+		return ""
+	}
+	_, message, found := strings.Cut(err.Error(), "destination ")
+	if !found {
+		return ""
+	}
+	dataset, _, found := strings.Cut(message, " has been modified")
+	dataset = strings.Trim(dataset, "'\"")
+	if !found || validateDataset(dataset) != nil || dataset != dest && !strings.HasPrefix(dataset, dest+"/") {
+		return ""
+	}
+	return "zfs rollback -r " + dataset + "@" + snapshot
 }
 
 func replicate(ctx context.Context, cfg Config, base *snapshot, snapName, resumeToken string, total int64, raw bool, l logger) (int64, time.Duration, error) {

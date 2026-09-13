@@ -81,10 +81,13 @@ func TestCommandArguments(t *testing.T) {
 	}
 	recv := receiveArgs(cfg)
 	joined := strings.Join(recv, " ")
-	for _, required := range []string{"receive -s -u -F", "readonly=on", "canmount=off", "mountpoint=none", ownerNameProp + "=server-a", "backup/server-a"} {
+	for _, required := range []string{"receive -s -u", "readonly=on", "canmount=off", "mountpoint=none", ownerNameProp + "=server-a", "backup/server-a"} {
 		if !strings.Contains(joined, required) {
 			t.Errorf("receive args missing %q: %s", required, joined)
 		}
+	}
+	if strings.Contains(joined, " -F") {
+		t.Errorf("receive args may delete destination-only child datasets: %s", joined)
 	}
 }
 
@@ -436,4 +439,18 @@ func TestReplicationStartFailuresAreAttributed(t *testing.T) {
 			t.Fatalf("got %v, want send start failure", err)
 		}
 	})
+}
+
+func TestRollbackCommand(t *testing.T) {
+	for _, message := range []string{
+		"cannot receive incremental stream: destination 'backup/data/child' has been modified\nsince most recent snapshot",
+		"cannot receive incremental stream: destination backup/data/child has been modified\nsince most recent snapshot",
+	} {
+		if got := rollbackCommand(errors.New(message), "backup/data", "mzb-test-old"); got != "zfs rollback -r backup/data/child@mzb-test-old" {
+			t.Fatalf("rollback command = %q", got)
+		}
+	}
+	if got := rollbackCommand(errors.New("destination backup/other has been modified"), "backup/data", "mzb-test-old"); got != "" {
+		t.Fatalf("foreign destination accepted: %q", got)
+	}
 }

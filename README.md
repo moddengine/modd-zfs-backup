@@ -26,8 +26,8 @@ sudo modd-zfs-backup \
 
 Print the build version with `modd-zfs-backup --version`.
 
-Mirror a complete dataset tree. Recursive mode uses ZFS replication streams
-and may remove destination-only descendants:
+Replicate a complete dataset tree. Recursive mode preserves destination
+descendants that are no longer present on the source:
 
 ```sh
 sudo modd-zfs-backup \
