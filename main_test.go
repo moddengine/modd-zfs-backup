@@ -79,7 +79,7 @@ func TestCommandArguments(t *testing.T) {
 	if filepath.Base(ssh.Path) != "ssh" || !strings.Contains(sshArgs, "BatchMode=yes") || !strings.Contains(sshArgs, "IdentitiesOnly=yes -i /etc/modd-zfs-backup/key -- backup@host zfs list tank/data") {
 		t.Fatalf("remote command: %#v", ssh.Args)
 	}
-	recv := receiveArgs(cfg)
+	recv := receiveArgs(cfg, cfg.Dest)
 	joined := strings.Join(recv, " ")
 	for _, required := range []string{"receive -s -u", "readonly=on", "canmount=off", "mountpoint=none", ownerNameProp + "=server-a", "backup/server-a"} {
 		if !strings.Contains(joined, required) {
@@ -146,20 +146,22 @@ func TestSnapshotAndResumeParsing(t *testing.T) {
 }
 
 func TestResumeTokenSafety(t *testing.T) {
-	cfg := Config{Name: "server-a", Source: Source{Dataset: "tank/data"}}
+	cfg := Config{Name: "server-a", Source: Source{Dataset: "tank/data"}, Dest: "backup/data", Recursive: true}
 	snaps := []snapshot{{Name: "mzb-server-a-123", GUID: 1}}
 	for _, tt := range []struct {
-		name, toname string
-		wantOK       bool
+		name, toname, dest string
+		wantOK             bool
 	}{
-		{"valid", "tank/data@mzb-server-a-123", true},
-		{"other-dataset", "tank/other@mzb-server-a-123", false},
-		{"other-backup", "tank/data@mzb-other-123", false},
-		{"missing-source-snapshot", "tank/data@mzb-server-a-999", false},
+		{"valid", "tank/data@mzb-server-a-123", "backup/data", true},
+		{"valid-child", "tank/data/child@mzb-server-a-123", "backup/data/child", true},
+		{"other-dataset", "tank/other@mzb-server-a-123", "backup/data", false},
+		{"wrong-child", "tank/data/other@mzb-server-a-123", "backup/data/child", false},
+		{"other-backup", "tank/data@mzb-other-123", "backup/data", false},
+		{"missing-source-snapshot", "tank/data@mzb-server-a-999", "backup/data", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := &fakeRunner{output: map[string]string{"send -nP -t token": "toname = " + tt.toname + "\nsize = 4096\n"}}
-			target, total, err := validateResumeToken(context.Background(), runner, cfg, snaps, "token")
+			target, total, err := validateResumeToken(context.Background(), runner, cfg, snaps, resumeState{Token: "token", Dest: tt.dest})
 			if tt.wantOK && (err != nil || target == nil || total != 4096) {
 				t.Fatalf("valid token rejected: target=%#v total=%d err=%v", target, total, err)
 			}
@@ -167,6 +169,16 @@ func TestResumeTokenSafety(t *testing.T) {
 				t.Fatalf("unsafe token accepted: target=%#v", target)
 			}
 		})
+	}
+}
+
+func TestDestinationResumeFindsChild(t *testing.T) {
+	runner := &fakeRunner{output: map[string]string{
+		"get -H -o name,value -r receive_resume_token backup/data": "backup/data\t-\nbackup/data/child\ttoken\n",
+	}}
+	resume, err := destinationResume(context.Background(), runner, "backup/data", true)
+	if err != nil || resume != (resumeState{Token: "token", Dest: "backup/data/child"}) {
+		t.Fatalf("resume = %#v, %v", resume, err)
 	}
 }
 
@@ -403,7 +415,7 @@ exec "$FAKE_ZFS" "$@"
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				_, _, err := replicate(ctx, Config{Name: "test", Source: source, Dest: "backup/server-a"}, nil, "snap", "", 0, false, logger{io.Discard})
+				_, _, err := replicate(ctx, Config{Name: "test", Source: source, Dest: "backup/server-a"}, nil, "snap", resumeState{}, 0, false, logger{io.Discard})
 				var pipeline *pipelineError
 				if !errors.As(err, &pipeline) || pipeline.Primary != failure {
 					t.Fatalf("got %v, want %s failure", err, failure)
@@ -416,7 +428,7 @@ exec "$FAKE_ZFS" "$@"
 func TestReplicationStartFailuresAreAttributed(t *testing.T) {
 	t.Run("receive", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
-		_, _, err := replicate(context.Background(), Config{Name: "test", Source: Source{Dataset: "tank/data"}, Dest: "backup/data"}, nil, "snap", "", 0, false, logger{io.Discard})
+		_, _, err := replicate(context.Background(), Config{Name: "test", Source: Source{Dataset: "tank/data"}, Dest: "backup/data"}, nil, "snap", resumeState{}, 0, false, logger{io.Discard})
 		var pipeline *pipelineError
 		if !errors.As(err, &pipeline) || pipeline.Primary != "receive" {
 			t.Fatalf("got %v, want receive start failure", err)
@@ -433,7 +445,7 @@ func TestReplicationStartFailuresAreAttributed(t *testing.T) {
 		}
 		t.Setenv("PATH", dir)
 		cfg := Config{Name: "test", Source: Source{Remote: true, SSHHost: "backup@source", Dataset: "tank/data"}, Dest: "backup/data"}
-		_, _, err := replicate(context.Background(), cfg, nil, "snap", "", 0, false, logger{io.Discard})
+		_, _, err := replicate(context.Background(), cfg, nil, "snap", resumeState{}, 0, false, logger{io.Discard})
 		var pipeline *pipelineError
 		if !errors.As(err, &pipeline) || pipeline.Primary != "send" {
 			t.Fatalf("got %v, want send start failure", err)

@@ -363,9 +363,9 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 	}
 
 	var destSnaps []snapshot
-	resumeToken := ""
+	resume := resumeState{}
 	if destExists {
-		resumeToken, err = destinationToken(ctx, destRunner, cfg.Dest)
+		resume, err = destinationResume(ctx, destRunner, cfg.Dest, cfg.Recursive)
 		if err != nil {
 			startHealthcheck(ctx, cfg, l)
 			return failRun(ctx, cfg, l, started, "destination", "", err, true)
@@ -398,8 +398,8 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 	replaceDest := false
 	mode := modeFull
 	total := int64(0)
-	if resumeToken != "" {
-		target, total, err = validateResumeToken(ctx, sourceRunner, cfg, sourceSnaps, resumeToken)
+	if resume.Token != "" {
+		target, total, err = validateResumeToken(ctx, sourceRunner, cfg, sourceSnaps, resume)
 		if err != nil {
 			startHealthcheck(ctx, cfg, l)
 			return failRun(ctx, cfg, l, started, "resume", "", err, true)
@@ -474,7 +474,7 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 		if cfg.Progress && total == 0 {
 			l.info("send-estimate", "estimating replication stream size")
 			if mode == modeResume {
-				total, err = estimateResume(ctx, sourceRunner, resumeToken)
+				total, err = estimateResume(ctx, sourceRunner, resume.Token)
 			} else {
 				total, err = estimateSend(ctx, sourceRunner, cfg, base, target.Name, raw)
 			}
@@ -483,7 +483,7 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 			}
 		}
 		l.info("send", "starting %s replication snapshot=%s", mode, target.Name)
-		bytesSent, transferDuration, err = replicate(ctx, cfg, base, target.Name, resumeToken, total, raw, l)
+		bytesSent, transferDuration, err = replicate(ctx, cfg, base, target.Name, resume, total, raw, l)
 		if err != nil {
 			var pe *pipelineError
 			step := "send"
@@ -684,16 +684,34 @@ func snapshotGUID(ctx context.Context, runner ZFSRunner, path string) (uint64, e
 	return strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
 }
 
-func destinationToken(ctx context.Context, runner ZFSRunner, dest string) (string, error) {
-	out, err := runner.Output(ctx, "get", "-H", "-o", "value", "receive_resume_token", dest)
+type resumeState struct {
+	Token, Dest string
+}
+
+func destinationResume(ctx context.Context, runner ZFSRunner, dest string, recursive bool) (resumeState, error) {
+	args := []string{"get", "-H", "-o", "name,value"}
+	if recursive {
+		args = append(args, "-r")
+	}
+	out, err := runner.Output(ctx, append(args, "receive_resume_token", dest)...)
 	if err != nil {
-		return "", err
+		return resumeState{}, err
 	}
-	token := strings.TrimSpace(string(out))
-	if token == "-" {
-		return "", nil
+	var resume resumeState
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			return resumeState{}, fmt.Errorf("invalid receive resume token listing %q", line)
+		}
+		if fields[1] == "-" {
+			continue
+		}
+		if resume.Token != "" {
+			return resumeState{}, errors.New("destination has multiple interrupted receives")
+		}
+		resume = resumeState{Token: fields[1], Dest: fields[0]}
 	}
-	return token, nil
+	return resume, nil
 }
 
 func ownershipValues(cfg Config) map[string]string {
@@ -744,13 +762,13 @@ func replaceDestination(ctx context.Context, runner ZFSRunner, cfg Config, snaps
 	return runner.Run(ctx, "destroy", "-r", cfg.Dest)
 }
 
-func receiveArgs(cfg Config) []string {
+func receiveArgs(cfg Config, dest string) []string {
 	args := []string{"receive", "-s", "-u"}
 	args = append(args, "-o", "readonly=on", "-o", "canmount=off", "-o", "mountpoint=none")
 	for prop, value := range ownershipValues(cfg) {
 		args = append(args, "-o", prop+"="+value)
 	}
-	return append(args, cfg.Dest)
+	return append(args, dest)
 }
 
 func sendArgs(cfg Config, base *snapshot, snapName string, estimate, raw bool) []string {
@@ -811,18 +829,24 @@ func sendField(out []byte, key string) string {
 	return ""
 }
 
-func validateResumeToken(ctx context.Context, runner ZFSRunner, cfg Config, snaps []snapshot, token string) (*snapshot, int64, error) {
-	out, err := runner.Output(ctx, "send", "-nP", "-t", token)
+func validateResumeToken(ctx context.Context, runner ZFSRunner, cfg Config, snaps []snapshot, resume resumeState) (*snapshot, int64, error) {
+	out, err := runner.Output(ctx, "send", "-nP", "-t", resume.Token)
 	if err != nil {
 		return nil, 0, err
 	}
 	toName := sendField(out, "toname")
 	total, _ := strconv.ParseInt(sendField(out, "size"), 10, 64)
-	prefix := cfg.Source.Dataset + "@mzb-" + cfg.Name + "-"
-	if !strings.HasPrefix(toName, prefix) {
+	toDataset, short, found := strings.Cut(toName, "@")
+	sourceDataset := cfg.Source.Dataset
+	if resume.Dest != cfg.Dest {
+		if !cfg.Recursive || !strings.HasPrefix(resume.Dest, cfg.Dest+"/") {
+			return nil, 0, fmt.Errorf("resume destination %q is not part of this backup", resume.Dest)
+		}
+		sourceDataset += strings.TrimPrefix(resume.Dest, cfg.Dest)
+	}
+	if !found || toDataset != sourceDataset || !strings.HasPrefix(short, "mzb-"+cfg.Name+"-") {
 		return nil, 0, fmt.Errorf("resume token targets %q, not this backup", toName)
 	}
-	short := strings.TrimPrefix(toName, cfg.Source.Dataset+"@")
 	for i := range snaps {
 		if snaps[i].Name == short {
 			return &snaps[i], total, nil
@@ -883,14 +907,16 @@ func rollbackCommand(err error, dest, snapshot string) string {
 	return "zfs rollback -r " + dataset + "@" + snapshot
 }
 
-func replicate(ctx context.Context, cfg Config, base *snapshot, snapName, resumeToken string, total int64, raw bool, l logger) (int64, time.Duration, error) {
+func replicate(ctx context.Context, cfg Config, base *snapshot, snapName string, resume resumeState, total int64, raw bool, l logger) (int64, time.Duration, error) {
 	started := time.Now()
 	args := sendArgs(cfg, base, snapName, false, raw)
-	if resumeToken != "" {
-		args = []string{"send", "-t", resumeToken}
+	receiveDest := cfg.Dest
+	if resume.Token != "" {
+		args = []string{"send", "-t", resume.Token}
+		receiveDest = resume.Dest
 	}
 	send := sourceCommand(ctx, cfg.Source, cfg.SSHKey, args...)
-	recv := newCommand(ctx, "zfs", receiveArgs(cfg)...)
+	recv := newCommand(ctx, "zfs", receiveArgs(cfg, receiveDest)...)
 	sendErr, recvErr := &limitedBuffer{limit: stderrLimit}, &limitedBuffer{limit: stderrLimit}
 	send.Stderr, recv.Stderr = sendErr, recvErr
 	stream, err := send.StdoutPipe()
