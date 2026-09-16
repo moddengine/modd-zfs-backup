@@ -185,6 +185,7 @@ func TestDestinationResumeFindsChild(t *testing.T) {
 type fakeRunner struct {
 	output map[string]string
 	errors map[string]error
+	fails  map[string]int
 	calls  []string
 	err    error
 }
@@ -192,6 +193,10 @@ type fakeRunner struct {
 func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 	key := strings.Join(args, " ")
 	f.calls = append(f.calls, key)
+	if f.fails[key] > 0 {
+		f.fails[key]--
+		return errors.New("transient failure")
+	}
 	if err := f.errors[key]; err != nil {
 		return err
 	}
@@ -254,6 +259,16 @@ func TestHoldsAndCleanup(t *testing.T) {
 	}
 	if !strings.Contains(joined, "release mzb-test tank/data@mzb-test-old") || !strings.Contains(joined, "destroy tank/data@mzb-test-old") || strings.Contains(joined, "destroy tank/data@mzb-test-new") {
 		t.Fatalf("cleanup calls:\n%s", joined)
+	}
+}
+
+func TestEnsureHoldRetriesTransientFailure(t *testing.T) {
+	runner := &fakeRunner{fails: map[string]int{"hold mzb-test tank/data@mzb-test-new": 1}}
+	if err := ensureHold(context.Background(), runner, "mzb-test", "tank/data@mzb-test-new", false, "hold-source", logger{io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(runner.calls, "\n"); strings.Count(got, "hold mzb-test tank/data@mzb-test-new") != 2 || strings.Count(got, "holds -H tank/data@mzb-test-new") != 2 {
+		t.Fatalf("unexpected retry calls:\n%s", got)
 	}
 }
 

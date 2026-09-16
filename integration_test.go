@@ -435,6 +435,7 @@ func TestIntegrationHoldFailuresReconcileBothModes(t *testing.T) {
 					t.Fatal("hold failure reported success")
 				}
 				clearFault(t)
+				minimumInterval = 0
 				_ = os.WriteFile(commandLog, nil, 0666)
 				if err := execute(context.Background(), cfg, logger{io.Discard}); err != nil {
 					t.Fatal(err)

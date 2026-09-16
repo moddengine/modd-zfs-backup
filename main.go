@@ -402,6 +402,7 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 		target, total, err = validateResumeToken(ctx, sourceRunner, cfg, sourceSnaps, resume)
 		if err != nil {
 			startHealthcheck(ctx, cfg, l)
+			l.warn("resume", "saved receive may need to be cleared before retrying with: zfs receive -A %s", resume.Dest)
 			return failRun(ctx, cfg, l, started, "resume", "", err, true)
 		}
 		mode = modeResume
@@ -427,9 +428,9 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 			return failRun(ctx, cfg, l, started, "common", target.Name, errors.Join(sourceHoldErr, destHoldErr), true)
 		}
 		age := time.Since(target.When)
-		if (!sourceHeld || !destHeld) && age < minimumInterval {
+		if !sourceHeld || !destHeld {
 			mode = modeReconcile
-		} else if sourceHeld && destHeld && age < minimumInterval {
+		} else if age < minimumInterval {
 			l.info("skip", "newest protected snapshot is %s old; minimum interval is %s", age.Round(time.Second), minimumInterval)
 			return nil
 		} else {
@@ -485,6 +486,9 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 		l.info("send", "starting %s replication snapshot=%s", mode, target.Name)
 		bytesSent, transferDuration, err = replicate(ctx, cfg, base, target.Name, resume, total, raw, l)
 		if err != nil {
+			if resume.Token != "" {
+				l.warn("resume", "saved receive may need to be cleared before retrying with: zfs receive -A %s", resume.Dest)
+			}
 			var pe *pipelineError
 			step := "send"
 			if errors.As(err, &pe) {
@@ -1045,7 +1049,17 @@ func ensureHold(ctx context.Context, runner ZFSRunner, tag, snap string, recursi
 		args = append(args, "-r")
 	}
 	if err := runner.Run(ctx, append(args, tag, snap)...); err != nil {
-		return err
+		l.warn(step, "hold attempt failed; checking before retry: %v", err)
+		held, checkErr := hasHold(ctx, runner, snap, tag)
+		if checkErr != nil {
+			return errors.Join(err, checkErr)
+		}
+		if !held {
+			l.info(step, "retrying hold %s on %s", tag, snap)
+			if retryErr := runner.Run(ctx, append(args, tag, snap)...); retryErr != nil {
+				return errors.Join(err, retryErr)
+			}
+		}
 	}
 	l.info(step, "hold applied")
 	return nil
