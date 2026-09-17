@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,10 @@ import (
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 func TestParseAndValidate(t *testing.T) {
 	tests := []struct {
@@ -74,10 +79,15 @@ func TestCommandArguments(t *testing.T) {
 	if got := sendArgs(cfg, base, "mzb-server-a-new", false, false); got[2] != "-i" {
 		t.Fatalf("skip-intermediate flag: got %#v", got)
 	}
+	cfg.Source.controlPath = "/run/modd-zfs-backup/control"
 	ssh := sourceCommand(context.Background(), cfg.Source, "/etc/modd-zfs-backup/key", "list", "tank/data")
 	sshArgs := strings.Join(ssh.Args, " ")
-	if filepath.Base(ssh.Path) != "ssh" || !strings.Contains(sshArgs, "BatchMode=yes") || !strings.Contains(sshArgs, "IdentitiesOnly=yes -i /etc/modd-zfs-backup/key -- backup@host zfs list tank/data") {
+	if filepath.Base(ssh.Path) != "ssh" || !strings.Contains(sshArgs, "BatchMode=yes") || !strings.Contains(sshArgs, "IdentitiesOnly=yes -i /etc/modd-zfs-backup/key") || !strings.Contains(sshArgs, "ControlMaster=auto -o ControlPersist=1h -o ControlPath=/run/modd-zfs-backup/control -- backup@host zfs list tank/data") {
 		t.Fatalf("remote command: %#v", ssh.Args)
+	}
+	master := strings.Join(masterArgs("backup@host", "/etc/modd-zfs-backup/key", "/run/modd-zfs-backup/control"), " ")
+	if !strings.Contains(master, "ControlMaster=yes -o ControlPersist=1h -o ControlPath=/run/modd-zfs-backup/control -- backup@host true") {
+		t.Fatalf("master command: %s", master)
 	}
 	recv := receiveArgs(cfg, cfg.Dest)
 	joined := strings.Join(recv, " ")
@@ -88,6 +98,126 @@ func TestCommandArguments(t *testing.T) {
 	}
 	if strings.Contains(joined, " -F") {
 		t.Errorf("receive args may delete destination-only child datasets: %s", joined)
+	}
+}
+
+func TestSSHMasterRetriesTransientFailures(t *testing.T) {
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+	ssh := `#!/bin/sh
+count=0
+[ -f "$SSH_COUNT" ] && count=$(cat "$SSH_COUNT")
+count=$((count + 1))
+echo "$count" >"$SSH_COUNT"
+[ "$count" -lt 3 ] && exit 255
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(ssh), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("SSH_COUNT", count)
+	oldRetryBase := sshRetryBase
+	sshRetryBase = 0
+	t.Cleanup(func() { sshRetryBase = oldRetryBase })
+	runner := remoteZFS{host: "backup@host", controlPath: filepath.Join(dir, "control"), l: logger{io.Discard}}
+	if err := runner.start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(count)
+	if err != nil || strings.TrimSpace(string(out)) != "3" {
+		t.Fatalf("attempt count = %q, %v", out, err)
+	}
+}
+
+func TestSSHMasterRetryHonorsCancellation(t *testing.T) {
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+	ssh := "#!/bin/sh\necho called >>\"$SSH_COUNT\"\nexit 255\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(ssh), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("SSH_COUNT", count)
+	oldRetryBase := sshRetryBase
+	sshRetryBase = time.Hour
+	t.Cleanup(func() { sshRetryBase = oldRetryBase })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := remoteZFS{host: "backup@host", controlPath: filepath.Join(dir, "control"), l: logger{writerFunc(func(p []byte) (int, error) {
+		cancel()
+		return len(p), nil
+	})}}
+	if err := runner.start(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context cancellation", err)
+	}
+	out, err := os.ReadFile(count)
+	if err != nil || strings.Count(string(out), "called") != 1 {
+		t.Fatalf("command calls = %q, %v", out, err)
+	}
+}
+
+func TestRemoteOutputReconnectsOnce(t *testing.T) {
+	oldRetryBase := sshRetryBase
+	sshRetryBase = 0
+	t.Cleanup(func() { sshRetryBase = oldRetryBase })
+	for _, retryFails := range []bool{false, true} {
+		t.Run(map[bool]string{false: "recovers", true: "second-failure"}[retryFails], func(t *testing.T) {
+			dir := t.TempDir()
+			count := filepath.Join(dir, "count")
+			control := filepath.Join(dir, "control")
+			ssh := `#!/bin/sh
+count=0
+[ -f "$SSH_COUNT" ] && count=$(cat "$SSH_COUNT")
+count=$((count + 1))
+echo "$count" >"$SSH_COUNT"
+case "$count" in
+  1|2) exit 255 ;;
+  3) exit 0 ;;
+  4) [ "$SSH_RETRY_FAILS" = true ] && exit 255; echo recovered ;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(ssh), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(control, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+			t.Setenv("SSH_COUNT", count)
+			t.Setenv("SSH_RETRY_FAILS", strconv.FormatBool(retryFails))
+			runner := remoteZFS{host: "backup@host", controlPath: control, l: logger{io.Discard}}
+			out, err := runner.Output(context.Background(), "list", "tank/data")
+			if retryFails && err == nil {
+				t.Fatal("second SSH failure was ignored")
+			}
+			if !retryFails && (err != nil || strings.TrimSpace(string(out)) != "recovered") {
+				t.Fatalf("output = %q, err = %v", out, err)
+			}
+			attempts, readErr := os.ReadFile(count)
+			if readErr != nil || strings.TrimSpace(string(attempts)) != "4" {
+				t.Fatalf("command count = %q, %v", attempts, readErr)
+			}
+		})
+	}
+}
+
+func TestRemoteOutputDoesNotRetryZFSFailure(t *testing.T) {
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+	ssh := "#!/bin/sh\necho called >>\"$SSH_COUNT\"\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(ssh), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("SSH_COUNT", count)
+	runner := remoteZFS{host: "backup@host", controlPath: filepath.Join(dir, "control"), l: logger{io.Discard}}
+	if _, err := runner.Output(context.Background(), "list", "tank/data"); err == nil {
+		t.Fatal("remote ZFS failure was ignored")
+	}
+	out, err := os.ReadFile(count)
+	if err != nil || strings.Count(string(out), "called") != 1 {
+		t.Fatalf("command calls = %q, %v", out, err)
 	}
 }
 
@@ -183,16 +313,23 @@ func TestDestinationResumeFindsChild(t *testing.T) {
 }
 
 type fakeRunner struct {
-	output map[string]string
-	errors map[string]error
-	fails  map[string]int
-	calls  []string
-	err    error
+	output       map[string]string
+	outputValues map[string][]string
+	errors       map[string]error
+	runErrors    map[string][]error
+	outputErrors map[string][]error
+	fails        map[string]int
+	calls        []string
+	err          error
 }
 
 func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 	key := strings.Join(args, " ")
 	f.calls = append(f.calls, key)
+	if failures := f.runErrors[key]; len(failures) > 0 {
+		f.runErrors[key] = failures[1:]
+		return failures[0]
+	}
 	if f.fails[key] > 0 {
 		f.fails[key]--
 		return errors.New("transient failure")
@@ -206,6 +343,16 @@ func (f *fakeRunner) Run(_ context.Context, args ...string) error {
 func (f *fakeRunner) Output(_ context.Context, args ...string) ([]byte, error) {
 	key := strings.Join(args, " ")
 	f.calls = append(f.calls, key)
+	if failures := f.outputErrors[key]; len(failures) > 0 {
+		f.outputErrors[key] = failures[1:]
+		if failures[0] != nil {
+			return nil, failures[0]
+		}
+	}
+	if values := f.outputValues[key]; len(values) > 0 {
+		f.outputValues[key] = values[1:]
+		return []byte(values[0]), nil
+	}
 	if err := f.errors[key]; err != nil {
 		return nil, err
 	}
@@ -213,6 +360,46 @@ func (f *fakeRunner) Output(_ context.Context, args ...string) ([]byte, error) {
 		return nil, f.err
 	}
 	return []byte(f.output[key]), nil
+}
+
+func TestCreateSnapshotReconcilesSSHFailures(t *testing.T) {
+	sshErr := &commandError{Program: "ssh", ExitCode: 255, Err: errors.New("exit status 255")}
+	missingErr := &commandError{Program: "ssh", ExitCode: 1, Stderr: "dataset does not exist", Err: errors.New("exit status 1")}
+	path := "tank/data@mzb-test-new"
+	snapshotCall := "snapshot " + path
+	listCall := "list -H -o name " + path
+	guidCall := "get -H -p -o value guid " + path
+	tests := []struct {
+		name         string
+		runErrors    []error
+		outputErrors []error
+		wantRuns     int
+		wantErr      bool
+	}{
+		{name: "completed-before-disconnect", runErrors: []error{sshErr}, wantRuns: 1},
+		{name: "absent-then-retried", runErrors: []error{sshErr, nil}, outputErrors: []error{missingErr}, wantRuns: 2},
+		{name: "retry-completed-before-disconnect", runErrors: []error{sshErr, sshErr}, outputErrors: []error{missingErr, nil}, wantRuns: 2},
+		{name: "zfs-error", runErrors: []error{errors.New("permission denied")}, wantRuns: 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &fakeRunner{
+				output:       map[string]string{guidCall: "42\n"},
+				runErrors:    map[string][]error{snapshotCall: append([]error(nil), tt.runErrors...)},
+				outputErrors: map[string][]error{listCall: append([]error(nil), tt.outputErrors...)},
+			}
+			guid, err := createSnapshot(context.Background(), runner, path, false, logger{io.Discard})
+			if tt.wantErr && err == nil {
+				t.Fatal("snapshot error was ignored")
+			}
+			if !tt.wantErr && (err != nil || guid != 42) {
+				t.Fatalf("guid = %d, err = %v", guid, err)
+			}
+			if got := strings.Count(strings.Join(runner.calls, "\n"), snapshotCall); got != tt.wantRuns {
+				t.Fatalf("snapshot calls = %d, want %d: %#v", got, tt.wantRuns, runner.calls)
+			}
+		})
+	}
 }
 
 func TestCleanupFailuresRemainBestEffort(t *testing.T) {
@@ -269,6 +456,17 @@ func TestEnsureHoldRetriesTransientFailure(t *testing.T) {
 	}
 	if got := strings.Join(runner.calls, "\n"); strings.Count(got, "hold mzb-test tank/data@mzb-test-new") != 2 || strings.Count(got, "holds -H tank/data@mzb-test-new") != 2 {
 		t.Fatalf("unexpected retry calls:\n%s", got)
+	}
+}
+
+func TestEnsureHoldAcceptsAmbiguousRetryThatCompleted(t *testing.T) {
+	key := "holds -H tank/data@mzb-test-new"
+	runner := &fakeRunner{
+		fails:        map[string]int{"hold mzb-test tank/data@mzb-test-new": 2},
+		outputValues: map[string][]string{key: {"", "", "tank/data@mzb-test-new\tmzb-test\t1\n"}},
+	}
+	if err := ensureHold(context.Background(), runner, "mzb-test", "tank/data@mzb-test-new", false, "hold-source", logger{io.Discard}); err != nil {
+		t.Fatal(err)
 	}
 }
 

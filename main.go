@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,6 +32,7 @@ const (
 )
 
 var minimumInterval = 5 * time.Minute
+var sshRetryBase = time.Second
 var version = "dev"
 
 var (
@@ -40,9 +42,10 @@ var (
 )
 
 type Source struct {
-	Remote  bool
-	SSHHost string
-	Dataset string
+	Remote      bool
+	SSHHost     string
+	Dataset     string
+	controlPath string
 }
 
 type Config struct {
@@ -66,14 +69,93 @@ func (localZFS) Output(ctx context.Context, args ...string) ([]byte, error) {
 	return commandOutput(ctx, "zfs", args...)
 }
 
-type remoteZFS struct{ host, identity string }
+type remoteZFS struct {
+	host, identity, controlPath string
+	l                           logger
+}
 
 func (r remoteZFS) Run(ctx context.Context, args ...string) error {
-	return runCommand(ctx, "ssh", remoteArgs(r.host, r.identity, args...)...)
+	return runCommand(ctx, "ssh", remoteArgs(r.host, r.identity, r.controlPath, args...)...)
 }
 
 func (r remoteZFS) Output(ctx context.Context, args ...string) ([]byte, error) {
-	return commandOutput(ctx, "ssh", remoteArgs(r.host, r.identity, args...)...)
+	out, err := commandOutput(ctx, "ssh", remoteArgs(r.host, r.identity, r.controlPath, args...)...)
+	if !sshFailure(err) || ctx.Err() != nil {
+		return out, err
+	}
+	r.l.warn("source", "SSH command failed; checking control connection before retry: %v", err)
+	if reconnectErr := r.reconnect(ctx); reconnectErr != nil {
+		return nil, errors.Join(err, reconnectErr)
+	}
+	out, retryErr := commandOutput(ctx, "ssh", remoteArgs(r.host, r.identity, r.controlPath, args...)...)
+	if retryErr != nil {
+		return nil, retryErr
+	}
+	return out, nil
+}
+
+func (r remoteZFS) start(ctx context.Context) error {
+	var err error
+	for attempt := 1; attempt <= 4; attempt++ {
+		if err = runCommand(ctx, "ssh", masterArgs(r.host, r.identity, r.controlPath)...); err == nil {
+			return nil
+		}
+		if !sshFailure(err) || ctx.Err() != nil {
+			return err
+		}
+		alive, checkErr := r.checkMaster(ctx)
+		if checkErr != nil {
+			return errors.Join(err, checkErr)
+		}
+		if alive {
+			return nil
+		}
+		if attempt == 4 {
+			return err
+		}
+		delay := sshRetryBase << (attempt - 1)
+		if delay > 0 {
+			delay += time.Duration(rand.Int64N(int64(delay)))
+		}
+		r.l.warn("source", "SSH connection attempt %d/4 failed; retrying in %s: %v", attempt, delay.Round(time.Millisecond), err)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
+func (r remoteZFS) reconnect(ctx context.Context) error {
+	alive, err := r.checkMaster(ctx)
+	if err != nil {
+		return err
+	}
+	if alive {
+		return nil
+	}
+	return r.start(ctx)
+}
+
+func (r remoteZFS) checkMaster(ctx context.Context) (bool, error) {
+	if _, err := os.Lstat(r.controlPath); errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("inspect SSH control socket: %w", err)
+	}
+	if err := runCommand(ctx, "ssh", "-o", "BatchMode=yes", "-o", "ControlPath="+r.controlPath, "-O", "check", "--", r.host); err == nil {
+		return true, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if err := os.Remove(r.controlPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("remove stale SSH control socket: %w", err)
+	}
+	return false, nil
 }
 
 type snapshot struct {
@@ -317,8 +399,25 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 
 	sourceRunner := ZFSRunner(localZFS{})
 	if cfg.Source.Remote {
-		sourceRunner = remoteZFS{host: cfg.Source.SSHHost, identity: cfg.SSHKey}
+		controlDir, err := os.MkdirTemp("", "modd-zfs-backup-ssh-")
+		if err != nil {
+			startHealthcheck(ctx, cfg, l)
+			return failRun(ctx, cfg, l, started, "source", "", fmt.Errorf("create SSH control directory: %w", err), true)
+		}
+		cfg.Source.controlPath = filepath.Join(controlDir, "control")
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = newCommand(closeCtx, "ssh", "-o", "BatchMode=yes", "-o", "ControlPath="+cfg.Source.controlPath, "-O", "exit", "--", cfg.Source.SSHHost).Run()
+			_ = os.RemoveAll(controlDir)
+		}()
+		remote := remoteZFS{host: cfg.Source.SSHHost, identity: cfg.SSHKey, controlPath: cfg.Source.controlPath, l: l}
 		l.info("source", "connecting to %s", cfg.Source.SSHHost)
+		if err := remote.start(ctx); err != nil {
+			startHealthcheck(ctx, cfg, l)
+			return failRun(ctx, cfg, l, started, "source", "", err, true)
+		}
+		sourceRunner = remote
 	}
 	if err := requireDataset(ctx, sourceRunner, cfg.Source.Dataset); err != nil {
 		startHealthcheck(ctx, cfg, l)
@@ -453,14 +552,7 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 		created := snapshot{Name: snapshotName(cfg.Name, now, append(sourceSnaps, destSnaps...)), When: now}
 		path := cfg.Source.Dataset + "@" + created.Name
 		l.info("snapshot-create", "creating source snapshot %s", path)
-		args := []string{"snapshot"}
-		if cfg.Recursive {
-			args = append(args, "-r")
-		}
-		if err := sourceRunner.Run(ctx, append(args, path)...); err != nil {
-			return failRun(ctx, cfg, l, started, "snapshot-create", created.Name, err, true)
-		}
-		guid, err := snapshotGUID(ctx, sourceRunner, path)
+		guid, err := createSnapshot(ctx, sourceRunner, path, cfg.Recursive, l)
 		if err != nil {
 			return failRun(ctx, cfg, l, started, "snapshot-create", created.Name, err, true)
 		}
@@ -688,6 +780,37 @@ func snapshotGUID(ctx context.Context, runner ZFSRunner, path string) (uint64, e
 	return strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
 }
 
+func createSnapshot(ctx context.Context, runner ZFSRunner, path string, recursive bool, l logger) (uint64, error) {
+	args := []string{"snapshot"}
+	if recursive {
+		args = append(args, "-r")
+	}
+	firstErr := runner.Run(ctx, append(args, path)...)
+	if firstErr != nil {
+		if !sshFailure(firstErr) {
+			return 0, firstErr
+		}
+		l.warn("snapshot-create", "snapshot attempt lost its SSH connection; checking whether it completed")
+		exists, checkErr := datasetExists(ctx, runner, path)
+		if checkErr != nil {
+			return 0, errors.Join(firstErr, checkErr)
+		}
+		if !exists {
+			retryErr := runner.Run(ctx, append(args, path)...)
+			if retryErr != nil {
+				exists, checkErr = datasetExists(ctx, runner, path)
+				if checkErr != nil {
+					return 0, errors.Join(firstErr, retryErr, checkErr)
+				}
+				if !exists {
+					return 0, errors.Join(firstErr, retryErr)
+				}
+			}
+		}
+	}
+	return snapshotGUID(ctx, runner, path)
+}
+
 type resumeState struct {
 	Token, Dest string
 }
@@ -861,18 +984,32 @@ func validateResumeToken(ctx context.Context, runner ZFSRunner, cfg Config, snap
 
 func sourceCommand(ctx context.Context, source Source, identity string, args ...string) *exec.Cmd {
 	if source.Remote {
-		return newCommand(ctx, "ssh", remoteArgs(source.SSHHost, identity, args...)...)
+		return newCommand(ctx, "ssh", remoteArgs(source.SSHHost, identity, source.controlPath, args...)...)
 	}
 	return newCommand(ctx, "zfs", args...)
 }
 
-func remoteArgs(host, identity string, args ...string) []string {
+func remoteArgs(host, identity, controlPath string, args ...string) []string {
+	ssh := sshOptions(identity)
+	if controlPath != "" {
+		ssh = append(ssh, "-o", "ControlMaster=auto", "-o", "ControlPersist=1h", "-o", "ControlPath="+controlPath)
+	}
+	ssh = append(ssh, "--", host, "zfs")
+	return append(ssh, args...)
+}
+
+func masterArgs(host, identity, controlPath string) []string {
+	ssh := sshOptions(identity)
+	ssh = append(ssh, "-o", "ControlMaster=yes", "-o", "ControlPersist=1h", "-o", "ControlPath="+controlPath, "--", host, "true")
+	return ssh
+}
+
+func sshOptions(identity string) []string {
 	ssh := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"}
 	if identity != "" {
 		ssh = append(ssh, "-o", "IdentitiesOnly=yes", "-i", identity)
 	}
-	ssh = append(ssh, "--", host, "zfs")
-	return append(ssh, args...)
+	return ssh
 }
 
 type pipelineError struct {
@@ -1057,7 +1194,13 @@ func ensureHold(ctx context.Context, runner ZFSRunner, tag, snap string, recursi
 		if !held {
 			l.info(step, "retrying hold %s on %s", tag, snap)
 			if retryErr := runner.Run(ctx, append(args, tag, snap)...); retryErr != nil {
-				return errors.Join(err, retryErr)
+				held, checkErr = hasHold(ctx, runner, snap, tag)
+				if checkErr != nil {
+					return errors.Join(err, retryErr, checkErr)
+				}
+				if !held {
+					return errors.Join(err, retryErr)
+				}
 			}
 		}
 	}
@@ -1119,6 +1262,11 @@ func (e *commandError) Error() string {
 	return message
 }
 func (e *commandError) Unwrap() error { return e.Err }
+
+func sshFailure(err error) bool {
+	var commandErr *commandError
+	return errors.As(err, &commandErr) && commandErr.Program == "ssh" && commandErr.ExitCode == 255
+}
 
 type limitedBuffer struct {
 	bytes.Buffer

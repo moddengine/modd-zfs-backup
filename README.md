@@ -196,8 +196,10 @@ sudo systemctl enable --now modd-zfs-backup@fwtest.timer
 systemctl list-timers 'modd-zfs-backup@*'
 ```
 
-The first scheduled run starts five minutes after boot. Later runs are scheduled
-one hour after the previous service activation. If the oneshot service is still
+The first scheduled run starts five minutes after boot, plus up to ten minutes
+of random delay. Later runs are scheduled one hour after the previous service
+activation with the same random delay, preventing multiple backup instances
+from opening SSH connections simultaneously. If the oneshot service is still
 active when the timer elapses, systemd does not start a second instance.
 
 ## Behaviour

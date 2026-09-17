@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-17
+
+### Fixed
+
+- Remote-source operations now share a self-healing persistent SSH connection,
+  retry transient connection failures safely, and stagger systemd timers to
+  avoid intermittent `MaxStartups` rejections.
+
 ## [1.2.2] - 2026-09-16
 
 ### Added
@@ -119,7 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Nix development tooling and GitHub Actions builds for static Linux
   amd64 and arm64 binaries.
 
-[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/moddengine/modd-zfs-backup/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/moddengine/modd-zfs-backup/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/moddengine/modd-zfs-backup/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/moddengine/modd-zfs-backup/compare/v1.1.0...v1.2.0
