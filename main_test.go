@@ -284,6 +284,8 @@ func TestResumeTokenSafety(t *testing.T) {
 	}{
 		{"valid", "tank/data@mzb-server-a-123", "backup/data", true},
 		{"valid-child", "tank/data/child@mzb-server-a-123", "backup/data/child", true},
+		{"valid-intermediate", "tank/data@autosnap_2026-10-04_21:00:06_hourly", "backup/data", true},
+		{"valid-child-intermediate", "tank/data/child@autosnap_2026-10-04_21:00:06_hourly", "backup/data/child", true},
 		{"other-dataset", "tank/other@mzb-server-a-123", "backup/data", false},
 		{"wrong-child", "tank/data/other@mzb-server-a-123", "backup/data/child", false},
 		{"other-backup", "tank/data@mzb-other-123", "backup/data", false},

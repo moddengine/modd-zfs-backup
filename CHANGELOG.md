@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-05
+
+### Fixed
+
+- Recursive backups now resume interrupted intermediate snapshots included by
+  incremental replication.
+
 ## [1.3.0] - 2026-09-17
 
 ### Fixed
@@ -127,7 +134,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Nix development tooling and GitHub Actions builds for static Linux
   amd64 and arm64 binaries.
 
-[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/moddengine/modd-zfs-backup/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/moddengine/modd-zfs-backup/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/moddengine/modd-zfs-backup/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/moddengine/modd-zfs-backup/compare/v1.2.0...v1.2.1

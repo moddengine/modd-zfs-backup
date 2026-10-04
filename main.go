@@ -971,13 +971,19 @@ func validateResumeToken(ctx context.Context, runner ZFSRunner, cfg Config, snap
 		}
 		sourceDataset += strings.TrimPrefix(resume.Dest, cfg.Dest)
 	}
-	if !found || toDataset != sourceDataset || !strings.HasPrefix(short, "mzb-"+cfg.Name+"-") {
+	if !found || toDataset != sourceDataset {
 		return nil, 0, fmt.Errorf("resume token targets %q, not this backup", toName)
 	}
 	for i := range snaps {
 		if snaps[i].Name == short {
 			return &snaps[i], total, nil
 		}
+	}
+	if cfg.Recursive && !strings.HasPrefix(short, "mzb-") && len(snaps) > 0 {
+		return &snaps[len(snaps)-1], total, nil
+	}
+	if !strings.HasPrefix(short, "mzb-"+cfg.Name+"-") {
+		return nil, 0, fmt.Errorf("resume token targets %q, not this backup", toName)
 	}
 	return nil, 0, fmt.Errorf("resume target %s no longer exists on source", toName)
 }
