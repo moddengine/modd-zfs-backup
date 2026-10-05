@@ -502,6 +502,9 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 		if err != nil {
 			startHealthcheck(ctx, cfg, l)
 			l.warn("resume", "saved receive may need to be cleared before retrying with: zfs receive -A %s", resume.Dest)
+			if base != nil {
+				l.warn("resume", "discard completed intermediate snapshots before retrying with: zfs rollback -r %s@%s", resume.Dest, base.Name)
+			}
 			return failRun(ctx, cfg, l, started, "resume", "", err, true)
 		}
 		mode = modeResume
@@ -974,13 +977,13 @@ func validateResumeToken(ctx context.Context, runner ZFSRunner, cfg Config, snap
 	if !found || toDataset != sourceDataset {
 		return nil, 0, fmt.Errorf("resume token targets %q, not this backup", toName)
 	}
+	if cfg.Recursive && resume.Dest != cfg.Dest {
+		return nil, 0, fmt.Errorf("cannot safely resume child dataset %q outside its recursive replication stream", resume.Dest)
+	}
 	for i := range snaps {
 		if snaps[i].Name == short {
 			return &snaps[i], total, nil
 		}
-	}
-	if cfg.Recursive && !strings.HasPrefix(short, "mzb-") && len(snaps) > 0 {
-		return &snaps[len(snaps)-1], total, nil
 	}
 	if !strings.HasPrefix(short, "mzb-"+cfg.Name+"-") {
 		return nil, 0, fmt.Errorf("resume token targets %q, not this backup", toName)
@@ -1042,13 +1045,15 @@ func rollbackCommand(err error, dest, snapshot string) string {
 	if err == nil {
 		return ""
 	}
-	_, message, found := strings.Cut(err.Error(), "destination ")
-	if !found {
-		return ""
+	message := err.Error()
+	dataset := ""
+	if _, rest, found := strings.Cut(message, "destination "); found {
+		dataset, _, _ = strings.Cut(rest, " has been modified")
+	} else if _, rest, found := strings.Cut(message, "most recent snapshot of "); found {
+		dataset, _, _ = strings.Cut(rest, " does not")
 	}
-	dataset, _, found := strings.Cut(message, " has been modified")
 	dataset = strings.Trim(dataset, "'\"")
-	if !found || validateDataset(dataset) != nil || dataset != dest && !strings.HasPrefix(dataset, dest+"/") {
+	if validateDataset(dataset) != nil || dataset != dest && !strings.HasPrefix(dataset, dest+"/") {
 		return ""
 	}
 	return "zfs rollback -r " + dataset + "@" + snapshot

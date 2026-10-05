@@ -283,9 +283,9 @@ func TestResumeTokenSafety(t *testing.T) {
 		wantOK             bool
 	}{
 		{"valid", "tank/data@mzb-server-a-123", "backup/data", true},
-		{"valid-child", "tank/data/child@mzb-server-a-123", "backup/data/child", true},
-		{"valid-intermediate", "tank/data@autosnap_2026-10-04_21:00:06_hourly", "backup/data", true},
-		{"valid-child-intermediate", "tank/data/child@autosnap_2026-10-04_21:00:06_hourly", "backup/data/child", true},
+		{"unsafe-child", "tank/data/child@mzb-server-a-123", "backup/data/child", false},
+		{"unsafe-intermediate", "tank/data@autosnap_2026-10-04_21:00:06_hourly", "backup/data", false},
+		{"unsafe-child-intermediate", "tank/data/child@autosnap_2026-10-04_21:00:06_hourly", "backup/data/child", false},
 		{"other-dataset", "tank/other@mzb-server-a-123", "backup/data", false},
 		{"wrong-child", "tank/data/other@mzb-server-a-123", "backup/data/child", false},
 		{"other-backup", "tank/data@mzb-other-123", "backup/data", false},
@@ -672,6 +672,7 @@ func TestRollbackCommand(t *testing.T) {
 	for _, message := range []string{
 		"cannot receive incremental stream: destination 'backup/data/child' has been modified\nsince most recent snapshot",
 		"cannot receive incremental stream: destination backup/data/child has been modified\nsince most recent snapshot",
+		"cannot receive incremental stream: most recent snapshot of backup/data/child does not\nmatch incremental source",
 	} {
 		if got := rollbackCommand(errors.New(message), "backup/data", "mzb-test-old"); got != "zfs rollback -r backup/data/child@mzb-test-old" {
 			t.Fatalf("rollback command = %q", got)
