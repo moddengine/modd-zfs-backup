@@ -26,6 +26,7 @@ const (
 	clockSkewLimit      = 30 * time.Second
 	stderrLimit         = 64 << 10
 	healthcheckLogLimit = 100_000
+	defaultSSHRetries   = 10
 	ownerNameProp       = "com.modd:backup-name"
 	ownerSourceProp     = "com.modd:backup-source"
 	ownerRecurProp      = "com.modd:backup-recursive"
@@ -52,6 +53,7 @@ type Config struct {
 	Name, Dest, HealthcheckURL, SSHKey          string
 	Source                                      Source
 	Recursive, Progress, Full, SkipIntermediate bool
+	SSHRetries                                  int
 }
 
 type ZFSRunner interface {
@@ -237,6 +239,7 @@ func main() {
 	l.info("config", "full=%t", cfg.Full)
 	l.info("config", "recursive=%t", cfg.Recursive)
 	l.info("config", "skip-intermediate=%t", cfg.SkipIntermediate)
+	l.info("config", "ssh-retries=%d", cfg.SSHRetries)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -247,7 +250,7 @@ func main() {
 
 func parseCLI(name string, args []string, output io.Writer) (Config, string, bool, error) {
 	var rawSource string
-	var cfg Config
+	cfg := Config{SSHRetries: defaultSSHRetries}
 	var showVersion bool
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(output)
@@ -256,6 +259,7 @@ func parseCLI(name string, args []string, output io.Writer) (Config, string, boo
 	flags.StringVar(&cfg.Dest, "dest", "", "local destination dataset")
 	flags.StringVar(&cfg.HealthcheckURL, "healthcheck-url", "", "Healthchecks.io ping URL")
 	flags.StringVar(&cfg.SSHKey, "ssh-key", "", "SSH private key for a remote source")
+	flags.IntVar(&cfg.SSHRetries, "ssh-retries", defaultSSHRetries, "maximum recursive send retries after an SSH disconnect")
 	flags.BoolVar(&cfg.Full, "full", false, "replace an owned destination when no common snapshot exists")
 	flags.BoolVar(&cfg.Recursive, "recursive", false, "replicate descendant datasets")
 	flags.BoolVar(&cfg.SkipIntermediate, "skip-intermediate", false, "exclude intermediate snapshots from incremental sends")
@@ -364,6 +368,9 @@ func validateConfig(c Config) error {
 	}
 	if c.SSHKey != "" && !c.Source.Remote {
 		return errors.New("--ssh-key requires a remote --source")
+	}
+	if c.SSHRetries < 0 {
+		return errors.New("--ssh-retries must not be negative")
 	}
 	if !c.Source.Remote && c.Recursive && strings.HasPrefix(c.Dest, c.Source.Dataset+"/") {
 		return errors.New("recursive destination must not be beneath the source dataset")
@@ -579,7 +586,27 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 			}
 		}
 		l.info("send", "starting %s replication snapshot=%s", mode, target.Name)
-		bytesSent, transferDuration, err = replicate(ctx, cfg, base, target.Name, resume, total, raw, l)
+		for attempt := 0; ; attempt++ {
+			var sent int64
+			var elapsed time.Duration
+			sent, elapsed, err = replicate(ctx, cfg, base, target.Name, resume, total, raw, l)
+			bytesSent += sent
+			transferDuration += elapsed
+			if err == nil || !cfg.Recursive || !cfg.Source.Remote || !remoteSendFailure(err) || ctx.Err() != nil {
+				break
+			}
+			if attempt >= cfg.SSHRetries {
+				l.warn("send", "SSH retry limit reached after %d retries", cfg.SSHRetries)
+				break
+			}
+			l.warn("send", "SSH connection was lost; resetting partial recursive receive before retry")
+			if resetErr := resetRecursiveReceive(ctx, sourceRunner, destRunner, cfg, base, *target, l); resetErr != nil {
+				err = errors.Join(err, fmt.Errorf("prepare recursive retry: %w", resetErr))
+				break
+			}
+			resume = resumeState{}
+			l.info("send", "retrying recursive replication snapshot=%s", target.Name)
+		}
 		if err != nil {
 			if resume.Token != "" {
 				l.warn("resume", "saved receive may need to be cleared before retrying with: zfs receive -A %s", resume.Dest)
@@ -842,6 +869,108 @@ func destinationResume(ctx context.Context, runner ZFSRunner, dest string, recur
 		resume = resumeState{Token: fields[1], Dest: fields[0]}
 	}
 	return resume, nil
+}
+
+func listDatasetNames(ctx context.Context, runner ZFSRunner, root string) ([]string, error) {
+	out, err := runner.Output(ctx, "list", "-H", "-o", "name", "-r", root)
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
+}
+
+func snapshotDatasets(ctx context.Context, runner ZFSRunner, root, name string) (map[string]bool, error) {
+	out, err := runner.Output(ctx, "list", "-H", "-t", "snapshot", "-o", "name", "-r", root)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]bool{}
+	suffix := "@" + name
+	for _, path := range strings.Fields(string(out)) {
+		if strings.HasSuffix(path, suffix) {
+			result[strings.TrimSuffix(path, suffix)] = true
+		}
+	}
+	return result, nil
+}
+
+func resetRecursiveReceive(ctx context.Context, source, dest ZFSRunner, cfg Config, base *snapshot, target snapshot, l logger) error {
+	resume, err := destinationResume(ctx, dest, cfg.Dest, true)
+	if err != nil {
+		return err
+	}
+	if resume.Token != "" {
+		l.warn("send", "aborting partial receive on %s before retry", resume.Dest)
+		if err := dest.Run(ctx, "receive", "-A", resume.Dest); err != nil {
+			return err
+		}
+	}
+	if base == nil {
+		exists, err := datasetExists(ctx, dest, cfg.Dest)
+		if err != nil || !exists {
+			return err
+		}
+		l.warn("send", "removing partial destination %s before retry", cfg.Dest)
+		return dest.Run(ctx, "destroy", "-r", cfg.Dest)
+	}
+
+	sourceDatasets, err := listDatasetNames(ctx, source, cfg.Source.Dataset)
+	if err != nil {
+		return err
+	}
+	destDatasets, err := listDatasetNames(ctx, dest, cfg.Dest)
+	if err != nil {
+		return err
+	}
+	sourceBase, err := snapshotDatasets(ctx, source, cfg.Source.Dataset, base.Name)
+	if err != nil {
+		return err
+	}
+	destBase, err := snapshotDatasets(ctx, dest, cfg.Dest, base.Name)
+	if err != nil {
+		return err
+	}
+	destTarget, err := snapshotDatasets(ctx, dest, cfg.Dest, target.Name)
+	if err != nil {
+		return err
+	}
+	destExists := map[string]bool{}
+	for _, dataset := range destDatasets {
+		destExists[dataset] = true
+	}
+	var removed []string
+	for _, sourceDataset := range sourceDatasets {
+		destDataset := cfg.Dest + strings.TrimPrefix(sourceDataset, cfg.Source.Dataset)
+		if !destExists[destDataset] {
+			continue
+		}
+		skip := false
+		for _, parent := range removed {
+			skip = skip || strings.HasPrefix(destDataset, parent+"/")
+		}
+		if skip {
+			continue
+		}
+		if !sourceBase[sourceDataset] {
+			if !destTarget[destDataset] {
+				return fmt.Errorf("cannot safely reset new destination dataset %s", destDataset)
+			}
+			l.warn("send", "removing partially replicated dataset %s before retry", destDataset)
+			if err := dest.Run(ctx, "destroy", "-r", destDataset); err != nil {
+				return err
+			}
+			removed = append(removed, destDataset)
+			continue
+		}
+		if !destBase[destDataset] {
+			return fmt.Errorf("destination dataset %s is missing base snapshot %s", destDataset, base.Name)
+		}
+		l.warn("send", "rolling back %s to %s before retry", destDataset, base.Name)
+		if err := dest.Run(ctx, "rollback", "-r", destDataset+"@"+base.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ownershipValues(cfg Config) map[string]string {
@@ -1277,6 +1406,12 @@ func (e *commandError) Unwrap() error { return e.Err }
 func sshFailure(err error) bool {
 	var commandErr *commandError
 	return errors.As(err, &commandErr) && commandErr.Program == "ssh" && commandErr.ExitCode == 255
+}
+
+func remoteSendFailure(err error) bool {
+	var pipeline *pipelineError
+	var commandErr *commandError
+	return errors.As(err, &pipeline) && errors.As(pipeline.Send, &commandErr) && commandErr.ExitCode == 255
 }
 
 type limitedBuffer struct {

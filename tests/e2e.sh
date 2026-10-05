@@ -299,6 +299,17 @@ EOF
 cat >"$current/ssh-wrapper" <<'EOF'
 #!/usr/bin/env bash
 printf 'ssh|%s\n' "$*" >>/run/modd-zfs-backup-test/commands.log
+fault="$(cat /run/modd-zfs-backup-test/fault 2>/dev/null || true)"
+state=/run/modd-zfs-backup-test/fault-state
+IFS=, read -ra cutoffs <<<"${fault#ssh-disconnect:}"
+attempt="$(cat "$state" 2>/dev/null || echo 0)"
+if [[ $fault == ssh-disconnect:* && $* == *' zfs send '* ]] && (( attempt < ${#cutoffs[@]} )); then
+  bytes="${cutoffs[$attempt]}"
+  [[ $bytes =~ ^[0-9]+$ ]] || exit 2
+  printf '%s\n' "$((attempt + 1))" >"$state"
+  /usr/bin/ssh "$@" | head -c "$bytes"
+  exit 255
+fi
 exec /usr/bin/ssh "$@"
 EOF
 scp "${ssh_options[@]}" "$current/zfs-wrapper" "$current/ssh-wrapper" "ubuntu@$ip:/tmp/"

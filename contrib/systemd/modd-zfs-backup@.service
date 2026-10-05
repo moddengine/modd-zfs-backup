@@ -9,7 +9,8 @@ Environment=NAME=%i
 Environment=FULL=false
 Environment=SKIP_INTERMEDIATE=false
 Environment=SSH_KEY=
+Environment=SSH_RETRIES=10
 EnvironmentFile=/etc/modd-zfs-backup/%i.conf
-ExecStart=/usr/local/bin/modd-zfs-backup --name ${NAME} --source=${SOURCE} --dest=${DEST} --ssh-key=${SSH_KEY} --recursive=${RECURSIVE} --full=${FULL} --skip-intermediate=${SKIP_INTERMEDIATE} --healthcheck-url=${HEALTHCHECK_URL}
+ExecStart=/usr/local/bin/modd-zfs-backup --name ${NAME} --source=${SOURCE} --dest=${DEST} --ssh-key=${SSH_KEY} --ssh-retries=${SSH_RETRIES} --recursive=${RECURSIVE} --full=${FULL} --skip-intermediate=${SKIP_INTERMEDIATE} --healthcheck-url=${HEALTHCHECK_URL}
 TimeoutStartSec=infinity
 UMask=0077

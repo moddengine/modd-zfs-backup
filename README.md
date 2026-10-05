@@ -113,6 +113,9 @@ sudo modd-zfs-backup \
 The option also sets OpenSSH's `IdentitiesOnly=yes`. It is rejected for local
 sources.
 
+Recursive remote sends retry up to 10 times after SSH disconnects. Set
+`--ssh-retries N` to change the limit; `0` disables these retries.
+
 ### Destination/receive role
 
 The receive side is always local. On Linux, running `modd-zfs-backup` as root
@@ -175,6 +178,7 @@ Create `/etc/modd-zfs-backup/fwtest.conf` with permissions `0600`:
 SOURCE=root@us-26081.modd.net.au:modd/sites
 DEST=rpool/backup-test/us-sites
 SSH_KEY=/etc/modd-zfs-backup/fwtest_ed25519
+SSH_RETRIES=10
 RECURSIVE=true
 FULL=false
 SKIP_INTERMEDIATE=false
@@ -184,8 +188,8 @@ HEALTHCHECK_URL=
 The configuration filename and unit instance must match; `fwtest.conf` is used
 by `modd-zfs-backup@fwtest.service`. The unit instance is also the default
 backup name; uncomment `NAME` to override it for snapshot names.
-`FULL` and `SKIP_INTERMEDIATE` default to `false`, and `SSH_KEY` defaults to
-empty when omitted.
+`FULL` and `SKIP_INTERMEDIATE` default to `false`, `SSH_KEY` defaults to empty,
+and `SSH_RETRIES` defaults to `10` when omitted.
 Test and enable it with:
 
 ```sh

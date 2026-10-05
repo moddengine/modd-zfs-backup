@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"io"
 	"net/http"
@@ -81,7 +82,7 @@ func integrationConfig(name, source, dest string, remote bool, healthURL string)
 	if remote {
 		s.Remote, s.SSHHost = true, "mzbsource@127.0.0.1"
 	}
-	return Config{Name: name, Source: s, Dest: dest, HealthcheckURL: healthURL}
+	return Config{Name: name, Source: s, Dest: dest, HealthcheckURL: healthURL, SSHRetries: defaultSSHRetries}
 }
 
 type healthEvents struct {
@@ -361,6 +362,75 @@ func TestIntegrationRecursiveReplicationAndEncryption(t *testing.T) {
 			commands, _ := os.ReadFile(commandLog)
 			if !strings.Contains(string(commands), "send -w") {
 				t.Fatalf("raw send not observed:\n%s", commands)
+			}
+		})
+	}
+}
+
+func TestIntegrationRecursiveRemoteDisconnectRetries(t *testing.T) {
+	requireIntegration(t)
+	withInterval(t, 0)
+	cases := []struct {
+		pattern     string
+		retries     int
+		wantSuccess bool
+	}{
+		{"32768,65536", 2, true},
+		{"32768,65536,131072", 3, true},
+		{"32768,65536,131072,262144", defaultSSHRetries, true},
+		{"32768,65536", 1, false},
+	}
+	for i, tc := range cases {
+		t.Run(tc.pattern+"/retries="+strconv.Itoa(tc.retries), func(t *testing.T) {
+			name := "disconnect-" + strconv.Itoa(i)
+			source, dest, mount := resetDatasets(t, name)
+			childMount := filepath.Join(mount, "child")
+			realZFS(t, "create", "-o", "mountpoint="+childMount, source+"/child")
+			cfg := integrationConfig(name, source, dest, true, "")
+			cfg.Recursive = true
+			cfg.SSHRetries = tc.retries
+			writeData(t, childMount, "initial", "initial sync")
+			if err := execute(context.Background(), cfg, logger{io.Discard}); err != nil {
+				t.Fatal(err)
+			}
+
+			for i := 0; i < 2; i++ {
+				writeData(t, childMount, "intermediate", strings.Repeat(strconv.Itoa(i), 512<<10))
+				realZFS(t, "snapshot", "-r", source+"@autosnap-intermediate"+strconv.Itoa(i))
+			}
+			newChildMount := filepath.Join(mount, "new-child")
+			realZFS(t, "create", "-o", "mountpoint="+newChildMount, source+"/new-child")
+			payload := make([]byte, 2<<20)
+			if _, err := rand.Read(payload); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(newChildMount, "payload"), payload, 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			setFault(t, "ssh-disconnect:"+tc.pattern)
+			err := execute(context.Background(), cfg, logger{io.Discard})
+			if (err == nil) != tc.wantSuccess {
+				t.Fatalf("execute error = %v, want success %t", err, tc.wantSuccess)
+			}
+			attempts, err := os.ReadFile(faultState)
+			wantAttempts := min(strings.Count(tc.pattern, ",")+1, tc.retries+1)
+			if err != nil || strings.TrimSpace(string(attempts)) != strconv.Itoa(wantAttempts) {
+				t.Fatalf("disconnect pattern was not exhausted: state=%q err=%v", attempts, err)
+			}
+			if !tc.wantSuccess {
+				return
+			}
+			targets := matchingSnapshots(t, source, name)
+			if len(targets) != 1 {
+				t.Fatalf("source snapshots after retry: %#v", targets)
+			}
+			for _, child := range []string{"", "/child", "/new-child"} {
+				sourceGUID := realZFS(t, "get", "-H", "-p", "-o", "value", "guid", source+child+"@"+targets[0].Name)
+				destGUID := realZFS(t, "get", "-H", "-p", "-o", "value", "guid", dest+child+"@"+targets[0].Name)
+				if sourceGUID != destGUID {
+					t.Fatalf("%s snapshot GUID differs after retry: source=%s destination=%s", child, sourceGUID, destGUID)
+				}
 			}
 		})
 	}

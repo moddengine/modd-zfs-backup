@@ -60,6 +60,7 @@ func TestParseAndValidate(t *testing.T) {
 		{Name: base.Name, Source: base.Source, Dest: "tank/backups/server-a", Recursive: true},
 		{Name: "bad/name", Source: base.Source, Dest: base.Dest},
 		{Name: base.Name, Source: base.Source, Dest: base.Dest, HealthcheckURL: "https://user:pass@example.test/ping"},
+		{Name: base.Name, Source: base.Source, Dest: base.Dest, SSHRetries: -1},
 	} {
 		if err := validateConfig(cfg); err == nil {
 			t.Errorf("unsafe config accepted: %#v", cfg)
@@ -224,8 +225,12 @@ func TestRemoteOutputDoesNotRetryZFSFailure(t *testing.T) {
 func TestCLIFlags(t *testing.T) {
 	var output bytes.Buffer
 	cfg, source, showVersion, err := parseCLI("modd-zfs-backup", []string{"--name", "test", "--source", "tank/data", "--dest", "backup/data", "--skip-intermediate"}, &output)
-	if err != nil || cfg.Name != "test" || source != "tank/data" || !cfg.SkipIntermediate || showVersion {
+	if err != nil || cfg.Name != "test" || source != "tank/data" || !cfg.SkipIntermediate || cfg.SSHRetries != defaultSSHRetries || showVersion {
 		t.Fatalf("parseCLI() = %#v, %q, %t, %v", cfg, source, showVersion, err)
+	}
+	cfg, _, _, err = parseCLI("modd-zfs-backup", []string{"--ssh-retries", "3"}, &output)
+	if err != nil || cfg.SSHRetries != 3 {
+		t.Fatalf("--ssh-retries: %#v, %v", cfg, err)
 	}
 
 	output.Reset()
@@ -311,6 +316,43 @@ func TestDestinationResumeFindsChild(t *testing.T) {
 	resume, err := destinationResume(context.Background(), runner, "backup/data", true)
 	if err != nil || resume != (resumeState{Token: "token", Dest: "backup/data/child"}) {
 		t.Fatalf("resume = %#v, %v", resume, err)
+	}
+}
+
+func TestResetRecursiveReceivePreservesDestinationOnlyDatasets(t *testing.T) {
+	source := &fakeRunner{output: map[string]string{
+		"list -H -o name -r tank/data":             "tank/data\ntank/data/child\ntank/data/new\ntank/data/new/grandchild\n",
+		"list -H -t snapshot -o name -r tank/data": "tank/data@mzb-test-old\ntank/data/child@mzb-test-old\n",
+	}}
+	dest := &fakeRunner{
+		output: map[string]string{
+			"get -H -o name,value -r receive_resume_token backup/data": "backup/data\t-\nbackup/data/child\ttoken\n",
+			"list -H -o name -r backup/data":                           "backup/data\nbackup/data/child\nbackup/data/new\nbackup/data/new/grandchild\nbackup/data/destination-only\n",
+		},
+		outputValues: map[string][]string{
+			"list -H -t snapshot -o name -r backup/data": {
+				"backup/data@mzb-test-old\nbackup/data/child@mzb-test-old\nbackup/data/destination-only@mzb-test-old\n",
+				"backup/data/new@mzb-test-new\nbackup/data/new/grandchild@mzb-test-new\n",
+			},
+		},
+	}
+	cfg := Config{Source: Source{Dataset: "tank/data"}, Dest: "backup/data", Recursive: true}
+	if err := resetRecursiveReceive(context.Background(), source, dest, cfg, &snapshot{Name: "mzb-test-old"}, snapshot{Name: "mzb-test-new"}, logger{io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	calls := strings.Join(dest.calls, "\n")
+	for _, want := range []string{
+		"receive -A backup/data/child",
+		"rollback -r backup/data@mzb-test-old",
+		"rollback -r backup/data/child@mzb-test-old",
+		"destroy -r backup/data/new",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Fatalf("missing %q in calls:\n%s", want, calls)
+		}
+	}
+	if strings.Contains(calls, "destination-only@") || strings.Contains(calls, "destroy -r backup/data/destination-only") || strings.Contains(calls, "destroy -r backup/data/new/grandchild") {
+		t.Fatalf("unexpected destructive call:\n%s", calls)
 	}
 }
 
@@ -680,5 +722,12 @@ func TestRollbackCommand(t *testing.T) {
 	}
 	if got := rollbackCommand(errors.New("destination backup/other has been modified"), "backup/data", "mzb-test-old"); got != "" {
 		t.Fatalf("foreign destination accepted: %q", got)
+	}
+}
+
+func TestRemoteSendFailure(t *testing.T) {
+	reset := &pipelineError{Send: &commandError{ExitCode: 255}}
+	if !remoteSendFailure(reset) || remoteSendFailure(&pipelineError{Send: &commandError{ExitCode: 1}}) {
+		t.Fatal("remote send failure classification is incorrect")
 	}
 }
