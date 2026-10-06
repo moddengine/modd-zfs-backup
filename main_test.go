@@ -319,6 +319,29 @@ func TestDestinationResumeFindsChild(t *testing.T) {
 	}
 }
 
+func TestVerifyReceivedSnapshotRecursive(t *testing.T) {
+	const list = "list -H -p -t snapshot -o name,guid -r "
+	source := &fakeRunner{output: map[string]string{
+		list + "tank/data": "tank/data@mzb-test-new\t1\ntank/data/child@mzb-test-new\t2\n",
+	}}
+	cfg := Config{Name: "test", Source: Source{Dataset: "tank/data"}, Dest: "backup/data", Recursive: true}
+	for _, tt := range []struct {
+		name, snapshots, wantErr string
+	}{
+		{"complete", "backup/data@mzb-test-new\t1\nbackup/data/child@mzb-test-new\t2\n", ""},
+		{"missing-child", "backup/data@mzb-test-new\t1\n", "missing from backup/data/child"},
+		{"child-guid-mismatch", "backup/data@mzb-test-new\t1\nbackup/data/child@mzb-test-new\t3\n", "GUID mismatch on backup/data/child"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dest := &fakeRunner{output: map[string]string{list + "backup/data": tt.snapshots}}
+			err := verifyReceivedSnapshot(context.Background(), source, dest, cfg, snapshot{Name: "mzb-test-new", GUID: 1})
+			if tt.wantErr == "" && err != nil || tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("verify error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestResetRecursiveReceivePreservesDestinationOnlyDatasets(t *testing.T) {
 	source := &fakeRunner{output: map[string]string{
 		"list -H -o name -r tank/data":             "tank/data\ntank/data/child\ntank/data/new\ntank/data/new/grandchild\n",

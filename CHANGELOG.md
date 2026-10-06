@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-10-06
+
+### Fixed
+
+- Recursive backups no longer promote a root snapshot left by a failed partial
+  receive unless the snapshot exists with matching GUIDs across every source
+  dataset.
+
 ## [1.4.2] - 2026-10-06
 
 ### Fixed
@@ -151,7 +159,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added Nix development tooling and GitHub Actions builds for static Linux
   amd64 and arm64 binaries.
 
-[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/moddengine/modd-zfs-backup/compare/v1.4.3...HEAD
+[1.4.3]: https://github.com/moddengine/modd-zfs-backup/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/moddengine/modd-zfs-backup/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/moddengine/modd-zfs-backup/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/moddengine/modd-zfs-backup/compare/v1.3.0...v1.4.0

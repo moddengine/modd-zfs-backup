@@ -624,12 +624,12 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 			return failRun(ctx, cfg, l, started, step, target.Name, err, true)
 		}
 		l.info("send", "replication complete bytes=%s duration=%s average=%s/s", formatBytes(bytesSent), transferDuration.Round(time.Second), formatBytes(rate(bytesSent, transferDuration)))
-		if err := verifyReceivedSnapshot(ctx, destRunner, cfg.Dest, *target); err != nil {
-			return failRun(ctx, cfg, l, started, "receive", target.Name, err, true)
-		}
 		if err := setDestinationProperties(ctx, destRunner, cfg); err != nil {
 			return failRun(ctx, cfg, l, started, "destination", target.Name, err, true)
 		}
+	}
+	if err := verifyReceivedSnapshot(ctx, sourceRunner, destRunner, cfg, *target); err != nil {
+		return failRun(ctx, cfg, l, started, "receive", target.Name, err, true)
 	}
 
 	tag := "mzb-" + cfg.Name
@@ -1373,15 +1373,58 @@ func cleanup(ctx context.Context, runner ZFSRunner, tag, dataset string, snaps [
 	}
 }
 
-func verifyReceivedSnapshot(ctx context.Context, runner ZFSRunner, dataset string, want snapshot) error {
-	got, err := snapshotGUID(ctx, runner, dataset+"@"+want.Name)
+func verifyReceivedSnapshot(ctx context.Context, source, dest ZFSRunner, cfg Config, want snapshot) error {
+	if !cfg.Recursive {
+		got, err := snapshotGUID(ctx, dest, cfg.Dest+"@"+want.Name)
+		if err != nil {
+			return err
+		}
+		if got != want.GUID {
+			return fmt.Errorf("received snapshot GUID mismatch: got %d, want %d", got, want.GUID)
+		}
+		return nil
+	}
+	sourceGUIDs, err := snapshotGUIDs(ctx, source, cfg.Source.Dataset, want.Name)
 	if err != nil {
 		return err
 	}
-	if got != want.GUID {
-		return fmt.Errorf("received snapshot GUID mismatch: got %d, want %d", got, want.GUID)
+	if guid, ok := sourceGUIDs[cfg.Source.Dataset]; !ok || guid != want.GUID {
+		return errors.New("source snapshot changed during replication verification")
+	}
+	destGUIDs, err := snapshotGUIDs(ctx, dest, cfg.Dest, want.Name)
+	if err != nil {
+		return err
+	}
+	for sourceDataset, sourceGUID := range sourceGUIDs {
+		destDataset := cfg.Dest + strings.TrimPrefix(sourceDataset, cfg.Source.Dataset)
+		if destGUID, ok := destGUIDs[destDataset]; !ok {
+			return fmt.Errorf("received snapshot is missing from %s", destDataset)
+		} else if destGUID != sourceGUID {
+			return fmt.Errorf("received snapshot GUID mismatch on %s: got %d, want %d", destDataset, destGUID, sourceGUID)
+		}
 	}
 	return nil
+}
+
+func snapshotGUIDs(ctx context.Context, runner ZFSRunner, root, name string) (map[string]uint64, error) {
+	out, err := runner.Output(ctx, "list", "-H", "-p", "-t", "snapshot", "-o", "name,guid", "-r", root)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]uint64{}
+	suffix := "@" + name
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !strings.HasSuffix(fields[0], suffix) {
+			continue
+		}
+		guid, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid zfs snapshot listing %q", line)
+		}
+		result[strings.TrimSuffix(fields[0], suffix)] = guid
+	}
+	return result, nil
 }
 
 type commandError struct {

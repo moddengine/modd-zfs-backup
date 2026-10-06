@@ -367,6 +367,50 @@ func TestIntegrationRecursiveReplicationAndEncryption(t *testing.T) {
 	}
 }
 
+func TestIntegrationFailedRecursiveReceiveDoesNotAdvanceProtectedSnapshot(t *testing.T) {
+	requireIntegration(t)
+	withInterval(t, 0)
+	name := "recursive-partial"
+	source, dest, mount := resetDatasets(t, name)
+	childMount := filepath.Join(mount, "child")
+	realZFS(t, "create", "-o", "mountpoint="+childMount, source+"/child")
+	cfg := integrationConfig(name, source, dest, false, "")
+	cfg.Recursive = true
+	writeData(t, childMount, "one", "initial")
+	if err := execute(context.Background(), cfg, logger{io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	old := assertProtected(t, cfg)
+
+	realZFS(t, "release", "mzb-"+name, dest+"/child@"+old.Name)
+	realZFS(t, "destroy", "-r", dest+"/child")
+	writeData(t, mount, "two", "next")
+	if err := execute(context.Background(), cfg, logger{io.Discard}); err == nil {
+		t.Fatal("recursive receive with a missing destination child succeeded")
+	}
+	newest := matchingSnapshots(t, source, name)[1]
+	if got := matchingSnapshots(t, dest, name); len(got) != 2 || got[1].GUID != newest.GUID {
+		t.Fatalf("failed receive did not leave the expected root snapshot: %#v", got)
+	}
+	if err := execute(context.Background(), cfg, logger{io.Discard}); err == nil || !strings.Contains(err.Error(), "missing from "+dest+"/child") {
+		t.Fatalf("partial snapshot was not rejected during reconciliation: %v", err)
+	}
+
+	tag := "mzb-" + name
+	for _, path := range []string{source + "@" + old.Name, dest + "@" + old.Name} {
+		held, err := hasHold(context.Background(), localZFS{}, path, tag)
+		if err != nil || !held {
+			t.Fatalf("previous snapshot %s was not preserved: held=%t err=%v", path, held, err)
+		}
+	}
+	for _, path := range []string{source + "@" + newest.Name, dest + "@" + newest.Name} {
+		held, err := hasHold(context.Background(), localZFS{}, path, tag)
+		if err != nil || held {
+			t.Fatalf("partial snapshot %s was promoted: held=%t err=%v", path, held, err)
+		}
+	}
+}
+
 func TestIntegrationRecursiveRemoteDisconnectRetries(t *testing.T) {
 	requireIntegration(t)
 	withInterval(t, 0)
