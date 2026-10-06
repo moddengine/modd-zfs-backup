@@ -342,6 +342,23 @@ func TestVerifyReceivedSnapshotRecursive(t *testing.T) {
 	}
 }
 
+func TestCommonRecursiveSnapshotRequiresEverySourceDataset(t *testing.T) {
+	const list = "list -H -p -t snapshot -o name,guid -r "
+	source := &fakeRunner{output: map[string]string{
+		list + "tank/data": "tank/data@new\t3\ntank/data/child@new\t4\ntank/data@old\t1\ntank/data/child@old\t2\n",
+	}}
+	dest := &fakeRunner{output: map[string]string{
+		list + "backup/data": "backup/data@new\t3\nbackup/data@old\t1\nbackup/data/child@old\t2\n",
+	}}
+	cfg := Config{Source: Source{Dataset: "tank/data"}, Dest: "backup/data", Recursive: true}
+	sourceSnaps := []snapshot{{Name: "old", GUID: 1}, {Name: "new", GUID: 3}}
+	destSnaps := []snapshot{{Name: "old", GUID: 1}, {Name: "new", GUID: 3}}
+	got, err := commonRecursiveSnapshot(context.Background(), source, dest, cfg, sourceSnaps, destSnaps)
+	if err != nil || got == nil || got.Name != "old" {
+		t.Fatalf("common recursive snapshot = %#v, %v", got, err)
+	}
+}
+
 func TestResetRecursiveReceivePreservesDestinationOnlyDatasets(t *testing.T) {
 	source := &fakeRunner{output: map[string]string{
 		"list -H -o name -r tank/data":             "tank/data\ntank/data/child\ntank/data/new\ntank/data/new/grandchild\n",

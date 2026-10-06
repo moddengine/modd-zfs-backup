@@ -489,6 +489,13 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 	l.info("snapshots-dest", "found %d matching destination snapshots", len(destSnaps))
 
 	base := commonSnapshot(sourceSnaps, destSnaps)
+	if cfg.Recursive {
+		base, err = commonRecursiveSnapshot(ctx, sourceRunner, destRunner, cfg, sourceSnaps, destSnaps)
+		if err != nil {
+			startHealthcheck(ctx, cfg, l)
+			return failRun(ctx, cfg, l, started, "common", "", err, true)
+		}
+	}
 	if destExists && base != nil && !cfg.Recursive {
 		allDestSnaps, listErr := listRootSnapshots(ctx, destRunner, cfg.Dest)
 		if listErr != nil {
@@ -800,6 +807,36 @@ func commonSnapshot(source, dest []snapshot) *snapshot {
 		}
 	}
 	return nil
+}
+
+func commonRecursiveSnapshot(ctx context.Context, source, dest ZFSRunner, cfg Config, sourceSnaps, destSnaps []snapshot) (*snapshot, error) {
+	destGUIDs := make(map[uint64]bool, len(destSnaps))
+	for _, snap := range destSnaps {
+		destGUIDs[snap.GUID] = true
+	}
+	for i := len(sourceSnaps) - 1; i >= 0; i-- {
+		candidate := &sourceSnaps[i]
+		if !destGUIDs[candidate.GUID] {
+			continue
+		}
+		sourceTree, err := snapshotGUIDs(ctx, source, cfg.Source.Dataset, candidate.Name)
+		if err != nil {
+			return nil, err
+		}
+		destTree, err := snapshotGUIDs(ctx, dest, cfg.Dest, candidate.Name)
+		if err != nil {
+			return nil, err
+		}
+		complete := sourceTree[cfg.Source.Dataset] == candidate.GUID && destTree[cfg.Dest] == candidate.GUID
+		for sourceDataset, guid := range sourceTree {
+			destDataset := cfg.Dest + strings.TrimPrefix(sourceDataset, cfg.Source.Dataset)
+			complete = complete && destTree[destDataset] == guid
+		}
+		if complete {
+			return candidate, nil
+		}
+	}
+	return nil, nil
 }
 
 func snapshotGUID(ctx context.Context, runner ZFSRunner, path string) (uint64, error) {
