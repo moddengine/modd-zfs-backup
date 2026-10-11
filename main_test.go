@@ -343,19 +343,27 @@ func TestVerifyReceivedSnapshotRecursive(t *testing.T) {
 }
 
 func TestCommonRecursiveSnapshotRequiresEverySourceDataset(t *testing.T) {
-	const list = "list -H -p -t snapshot -o name,guid -r "
+	const list = "list -H -p -t snapshot -o name,guid,creation -s creation -r "
 	source := &fakeRunner{output: map[string]string{
-		list + "tank/data": "tank/data@new\t3\ntank/data/child@new\t4\ntank/data@old\t1\ntank/data/child@old\t2\n",
+		list + "tank/data": "tank/data@mzb-test-old\t1\t1\ntank/data/child@mzb-test-old\t2\t1\ntank/data@mzb-test-new\t3\t2\ntank/data/child@mzb-test-new\t4\t2\n",
 	}}
 	dest := &fakeRunner{output: map[string]string{
-		list + "backup/data": "backup/data@new\t3\nbackup/data@old\t1\nbackup/data/child@old\t2\n",
+		list + "backup/data": "backup/data@mzb-test-old\t1\t1\nbackup/data/child@mzb-test-old\t2\t1\nbackup/data@mzb-test-new\t3\t2\n",
 	}}
-	cfg := Config{Source: Source{Dataset: "tank/data"}, Dest: "backup/data", Recursive: true}
-	sourceSnaps := []snapshot{{Name: "old", GUID: 1}, {Name: "new", GUID: 3}}
-	destSnaps := []snapshot{{Name: "old", GUID: 1}, {Name: "new", GUID: 3}}
-	got, err := commonRecursiveSnapshot(context.Background(), source, dest, cfg, sourceSnaps, destSnaps)
-	if err != nil || got == nil || got.Name != "old" {
-		t.Fatalf("common recursive snapshot = %#v, %v", got, err)
+	sourceSnaps, err := listSnapshots(context.Background(), source, "tank/data", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	destSnaps, err := listSnapshots(context.Background(), dest, "backup/data", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := commonRecursiveSnapshot(sourceSnaps, destSnaps)
+	if got == nil || got.Name != "mzb-test-old" {
+		t.Fatalf("common recursive snapshot = %#v", got)
+	}
+	if len(source.calls) != 1 || len(dest.calls) != 1 {
+		t.Fatalf("snapshot trees were listed more than once: source=%#v dest=%#v", source.calls, dest.calls)
 	}
 }
 

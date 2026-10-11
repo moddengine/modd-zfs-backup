@@ -161,9 +161,10 @@ func (r remoteZFS) checkMaster(ctx context.Context) (bool, error) {
 }
 
 type snapshot struct {
-	Name string
-	GUID uint64
-	When time.Time
+	Name  string
+	GUID  uint64
+	When  time.Time
+	GUIDs map[string]uint64
 }
 
 type runMode string
@@ -490,11 +491,7 @@ func execute(ctx context.Context, cfg Config, l logger) error {
 
 	base := commonSnapshot(sourceSnaps, destSnaps)
 	if cfg.Recursive {
-		base, err = commonRecursiveSnapshot(ctx, sourceRunner, destRunner, cfg, sourceSnaps, destSnaps)
-		if err != nil {
-			startHealthcheck(ctx, cfg, l)
-			return failRun(ctx, cfg, l, started, "common", "", err, true)
-		}
+		base = commonRecursiveSnapshot(sourceSnaps, destSnaps)
 	}
 	if destExists && base != nil && !cfg.Recursive {
 		allDestSnaps, listErr := listRootSnapshots(ctx, destRunner, cfg.Dest)
@@ -758,11 +755,16 @@ func listSnapshots(ctx context.Context, runner ZFSRunner, dataset, name string) 
 	if err != nil {
 		return nil, err
 	}
-	prefix := dataset + "@mzb-" + name + "-"
+	prefix := "mzb-" + name + "-"
+	byName := map[string]map[string]uint64{}
 	var result []snapshot
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 3 || !strings.HasPrefix(fields[0], prefix) {
+		if len(fields) != 3 {
+			continue
+		}
+		path, snapName, ok := strings.Cut(fields[0], "@")
+		if !ok || path != dataset && !strings.HasPrefix(path, dataset+"/") || !strings.HasPrefix(snapName, prefix) {
 			continue
 		}
 		guid, guidErr := strconv.ParseUint(fields[1], 10, 64)
@@ -770,7 +772,13 @@ func listSnapshots(ctx context.Context, runner ZFSRunner, dataset, name string) 
 		if guidErr != nil || timeErr != nil {
 			return nil, fmt.Errorf("invalid zfs snapshot listing %q", line)
 		}
-		result = append(result, snapshot{Name: strings.TrimPrefix(fields[0], dataset+"@"), GUID: guid, When: time.Unix(created, 0)})
+		if byName[snapName] == nil {
+			byName[snapName] = map[string]uint64{}
+		}
+		byName[snapName][strings.TrimPrefix(path, dataset)] = guid
+		if path == dataset {
+			result = append(result, snapshot{Name: snapName, GUID: guid, When: time.Unix(created, 0), GUIDs: byName[snapName]})
+		}
 	}
 	return result, nil
 }
@@ -809,34 +817,26 @@ func commonSnapshot(source, dest []snapshot) *snapshot {
 	return nil
 }
 
-func commonRecursiveSnapshot(ctx context.Context, source, dest ZFSRunner, cfg Config, sourceSnaps, destSnaps []snapshot) (*snapshot, error) {
-	destGUIDs := make(map[uint64]bool, len(destSnaps))
+func commonRecursiveSnapshot(sourceSnaps, destSnaps []snapshot) *snapshot {
+	destByGUID := make(map[uint64]snapshot, len(destSnaps))
 	for _, snap := range destSnaps {
-		destGUIDs[snap.GUID] = true
+		destByGUID[snap.GUID] = snap
 	}
 	for i := len(sourceSnaps) - 1; i >= 0; i-- {
 		candidate := &sourceSnaps[i]
-		if !destGUIDs[candidate.GUID] {
+		destCandidate, ok := destByGUID[candidate.GUID]
+		if !ok {
 			continue
 		}
-		sourceTree, err := snapshotGUIDs(ctx, source, cfg.Source.Dataset, candidate.Name)
-		if err != nil {
-			return nil, err
-		}
-		destTree, err := snapshotGUIDs(ctx, dest, cfg.Dest, candidate.Name)
-		if err != nil {
-			return nil, err
-		}
-		complete := sourceTree[cfg.Source.Dataset] == candidate.GUID && destTree[cfg.Dest] == candidate.GUID
-		for sourceDataset, guid := range sourceTree {
-			destDataset := cfg.Dest + strings.TrimPrefix(sourceDataset, cfg.Source.Dataset)
-			complete = complete && destTree[destDataset] == guid
+		complete := len(candidate.GUIDs) > 0
+		for dataset, guid := range candidate.GUIDs {
+			complete = complete && destCandidate.GUIDs[dataset] == guid
 		}
 		if complete {
-			return candidate, nil
+			return candidate
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 func snapshotGUID(ctx context.Context, runner ZFSRunner, path string) (uint64, error) {
